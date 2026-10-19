@@ -1,3 +1,0 @@
-{{- if  and .Values.orchestrator.enabled (ne  (include "parent.dataplaneMode" . ) "shared") }}
-{{- include "orchestrator.service" . }}
-{{- end }}

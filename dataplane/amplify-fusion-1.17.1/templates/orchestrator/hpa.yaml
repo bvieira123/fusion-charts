@@ -1,3 +1,0 @@
-{{- if ne (include "parent.dataplaneMode" . ) "shared" }}
-{{- include "orchestrator.hpa" . }}
-{{- end }}
