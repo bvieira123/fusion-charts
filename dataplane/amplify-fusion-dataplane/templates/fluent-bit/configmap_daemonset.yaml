@@ -1,0 +1,327 @@
+{{- if and .Values.fluentBit.enabled (eq .Values.fluentBit.kind "DaemonSet") -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "fluent-bit.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fluent-bit.labels" . | nindent 4 }}
+data:
+  custom_parsers.conf: |
+    [PARSER]
+        Name docker_no_time
+        Format json
+        Time_Keep Off
+        Time_Key time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+    [PARSER]
+        Name parser
+        Format regex
+        Regex ^(?<orgSchema>[^\s]+) (?<modeId>[0-9a-fA-F-]{36}) (?<transactionId>[0-9a-fA-F-]{36}) (?<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}:\d{3}) \[(?<thread>[^\]]+)\] (?<level>\w+) +(?<class>[^\s]+) \((?<traceId>[^,]*),(?<spanId>[^\)]*)\) - (?<message>.*)$
+
+    {{- if and (include "valkey.internal.enabled" .) .Values.logging.logJsonEnabled }}
+    [PARSER]
+        Name        valkey_logfmt
+        Format      logfmt
+        Time_Key    timestamp
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep   On
+    {{- end }}
+
+  fluent-bit.conf: |
+    [SERVICE]
+        Daemon Off
+        Flush 1
+        Log_Level info
+        storage.path /var/log/fluent-bit/storage/{{ .Release.Namespace }}
+        storage.backlog.flush_on_shutdown On
+        Parsers_File /fluent-bit/etc/parsers.conf
+        Parsers_File /fluent-bit/etc/custom_parsers.conf
+        HTTP_Server On
+        HTTP_Listen 0.0.0.0
+        HTTP_Port {{ .Values.fluentBit.metricsPort }}
+        Health_Check On
+        Hot_Reload On
+
+    {{- with .Values.fluentBit.config.service }}
+    {{ tpl . $ | nindent 4 }}
+    {{- end }}
+
+    [INPUT]
+        Name tail
+        Path /var/log/containers/*orchestrator*_{{ .Release.Namespace }}_*.log
+        multiline.parser docker, cri
+        DB /var/log/fluent-bit/storage/{{ .Release.Namespace }}/orchestrator-txn-tail.db
+        storage.type filesystem
+        read_from_head true
+        Tag orchestrator.txn.*
+        Skip_Long_Lines On
+
+    [INPUT]
+        Name tail
+        Path /var/log/containers/*inbound*_{{ .Release.Namespace }}_*.log
+        multiline.parser docker, cri
+        DB /var/log/fluent-bit/storage/{{ .Release.Namespace }}/inbound-worker-txn-tail.db
+        storage.type filesystem
+        read_from_head true
+        Tag inbound.txn.*
+        Skip_Long_Lines On
+
+    [INPUT]
+        Name tail
+        Path /var/log/containers/*orchestrator*_{{ .Release.Namespace }}_*.log
+        multiline.parser docker, cri
+        DB /var/log/fluent-bit/storage/{{ .Release.Namespace }}/orchestrator-tail.db
+        storage.type filesystem
+        read_from_head true
+        Tag orchestrator.app.log*
+        Skip_Long_Lines On
+
+    [INPUT]
+        Name tail
+        Path /var/log/containers/*sink-agent*_{{ .Release.Namespace }}_*.log
+        multiline.parser docker, cri
+        DB /var/log/fluent-bit/storage/{{ .Release.Namespace }}/sink-agent-tail.db
+        storage.type filesystem
+        read_from_head true
+        Tag sink-agent.*
+        Skip_Long_Lines On
+
+    [INPUT]
+        Name tail
+        Path /var/log/containers/*pep-server*_{{ .Release.Namespace }}_*.log
+        multiline.parser docker, cri
+        DB /var/log/fluent-bit/storage/{{ .Release.Namespace }}/pep-server-tail.db
+        storage.type filesystem
+        read_from_head true
+        Tag pep_server.*
+        Skip_Long_Lines On
+
+    [INPUT]
+        Name tail
+        Path /var/log/containers/*fusion-operator*_{{ .Release.Namespace }}_*.log
+        multiline.parser docker, cri
+        DB /var/log/fluent-bit/storage/{{ .Release.Namespace }}/fusion-operator-tail.db
+        storage.type filesystem
+        read_from_head true
+        Tag fusion_operator.*
+        Skip_Long_Lines On
+
+    [INPUT]
+        Name tail
+        Path /var/log/containers/*envoy*_{{ .Release.Namespace }}_*.log
+        multiline.parser docker, cri
+        DB /var/log/fluent-bit/storage/{{ .Release.Namespace }}/envoy-tail.db
+        storage.type filesystem
+        read_from_head true
+        Tag envoy.*
+        Skip_Long_Lines On
+
+{{- if (include "valkey.internal.enabled" .) }}
+    [INPUT]
+        Name tail
+        Path /var/log/containers/*valkey*_{{ .Release.Namespace }}_*.log
+        multiline.parser docker, cri
+        DB /var/log/fluent-bit/storage/{{ .Release.Namespace }}/valkey-tail.db
+        storage.type filesystem
+        read_from_head true
+        Tag valkey.*
+        Skip_Long_Lines On
+{{- end }}
+
+    [INPUT]
+        Name tail
+        Path /var/log/containers/*inbound*_{{ .Release.Namespace }}_*.log
+        multiline.parser docker, cri
+        DB /var/log/fluent-bit/storage/{{ .Release.Namespace }}/inbound-worker-tail.db
+        storage.type filesystem
+        read_from_head true
+        Tag inbound.app.log*
+        Skip_Long_Lines On
+
+    [INPUT]
+        Name   opentelemetry
+        Listen 0.0.0.0
+        Port   4317
+        Tag_From_URI Off
+        Tag    otel_grpc
+{{- if .Values.zerotrust.enabled }}
+        tls on
+        tls.verify on
+        tls.verify_client_cert on
+        tls.crt_file /tls/server.crt
+        tls.key_file /tls/server.key
+        tls.ca_file /tls/ca.crt
+{{- end }}
+    
+    [INPUT]
+        Name   opentelemetry
+        Listen 0.0.0.0
+        Port   4318
+        Tag_From_URI Off
+        Tag    otel_http
+{{- if .Values.zerotrust.enabled }}
+        tls on
+        tls.verify on
+        tls.verify_client_cert on
+        tls.crt_file /tls/server.crt
+        tls.key_file /tls/server.key
+        tls.ca_file /tls/ca.crt
+{{- end }}
+
+    {{- with .Values.fluentBit.config.inputs }}
+    {{ tpl . $ | nindent 4 }}
+    {{- end }}
+
+    [FILTER]
+        Name kubernetes
+        Match orchestrator.txn.*
+        Kube_Tag_Prefix orchestrator.txn.var.log.containers.
+        Merge_Log On
+
+    [FILTER]
+        Name parser
+        Match orchestrator.txn.*
+        Key_Name log
+        Parser parser
+        Reserve_Data On
+        Preserve_Key On
+
+    [FILTER]
+        Name lua
+        Match orchestrator.txn.*
+        Script /fluent-bit/etc/lua/create_runtime_Directories.lua
+        Call handle_orchestrator_txn_logs
+
+    [FILTER]
+        Name kubernetes
+        Match inbound.txn.*
+        Kube_Tag_Prefix inbound.txn.var.log.containers.
+        Merge_Log On
+
+    [FILTER]
+        Name parser
+        Match inbound.txn.*
+        Key_Name log
+        Parser parser
+        Reserve_Data On
+        Preserve_Key On
+
+    [FILTER]
+        Name lua
+        Match inbound.txn.*
+        Script /fluent-bit/etc/lua/create_runtime_Directories.lua
+        Call handle_inbound_txn_logs
+
+    [FILTER]
+        Name kubernetes
+        Match orchestrator.app.log*
+        Kube_Tag_Prefix orchestrator.app.log.var.log.containers.
+        Merge_Log On
+
+    [FILTER]
+        Name lua
+        Match orchestrator.app.log*
+        Script /fluent-bit/etc/lua/create_runtime_Directories.lua
+        Call handle_orchestrator_logs
+
+    [FILTER]
+        Name kubernetes
+        Match sink-agent.*
+        Kube_Tag_Prefix sink-agent.var.log.containers.
+        Merge_Log On
+
+    [FILTER]
+        Name lua
+        Match sink-agent.*
+        Script /fluent-bit/etc/lua/create_runtime_Directories.lua
+        Call handle_sink_agent_logs
+
+    [FILTER]
+        Name kubernetes
+        Match pep_server.*
+        Kube_Tag_Prefix pep-server.var.log.containers.
+        Merge_Log On
+
+    [FILTER]
+        Name lua
+        Match pep_server.*
+        Script /fluent-bit/etc/lua/create_runtime_Directories.lua
+        Call handle_pep_server_logs
+
+    [FILTER]
+        Name kubernetes
+        Match fusion_operator.*
+        Kube_Tag_Prefix fusion-operator.var.log.containers.
+        Merge_Log On
+
+    [FILTER]
+        Name lua
+        Match fusion_operator.*
+        Script /fluent-bit/etc/lua/create_runtime_Directories.lua
+        Call handle_fusion_operator_logs
+
+    [FILTER]
+        Name kubernetes
+        Match envoy.*
+        Kube_Tag_Prefix envoy.var.log.containers.
+        Merge_Log On
+
+    [FILTER]
+        Name lua
+        Match envoy.*
+        Script /fluent-bit/etc/lua/create_runtime_Directories.lua
+        Call handle_envoy_logs
+
+{{- if (include "valkey.internal.enabled" .) }}
+
+    {{- if .Values.logging.logJsonEnabled }}
+    [FILTER]
+        Name         parser
+        Match        valkey.*
+        Key_Name     log
+        Parser       valkey_logfmt
+        Reserve_Data On
+        Preserve_Key On
+    {{- end }}
+
+    [FILTER]
+        Name kubernetes
+        Match valkey.*
+        Kube_Tag_Prefix valkey.var.log.containers.
+        Merge_Log On
+
+    [FILTER]
+        Name lua
+        Match valkey.*
+        Script /fluent-bit/etc/lua/create_runtime_Directories.lua
+        Call handle_valkey_logs
+{{- end }}
+
+    [FILTER]
+        Name kubernetes
+        Match inbound.app.log*
+        Kube_Tag_Prefix inbound.app.log.var.log.containers.
+        Merge_Log On
+
+    [FILTER]
+        Name lua
+        Match inbound.app.log*
+        Script /fluent-bit/etc/lua/create_runtime_Directories.lua
+        Call handle_inbound_logs
+
+    {{- with .Values.fluentBit.config.filters }}
+    {{ tpl . $ | nindent 4 }}
+    {{- end }}
+
+    {{- with .Values.fluentBit.config.outputs }}
+    {{ tpl . $ | nindent 4 }}
+    {{- else }}
+    # Fallback output: required to let Fluent Bit ACK records/chunks even when
+    # business side-effects are done in Lua filters.
+    [OUTPUT]
+        Name null
+        Match *
+    {{- end }}
+
+  {{- end }}

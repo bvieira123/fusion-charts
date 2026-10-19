@@ -1,0 +1,61 @@
+{{- if eq (include "valkey.internal.subQuorumFailoverRequired" .) "true" }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "valkeyFailoverController.name" . }}-role
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - create
+      - list
+      - watch
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    resourceNames:
+      - {{ .Values.valkey.internal.failoverController.leaderElection.leaseName }}
+      - {{ .Values.valkey.internal.failoverController.leaderElection.signalLeaseName }}
+      - {{ .Values.valkey.internal.failoverController.leaderElection.secondOpinionLeaseName }}
+    verbs:
+      - get
+      - update
+      - patch
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+  # RBAC resourceNames cannot scope the list/watch verbs, only get/update/patch/delete,
+  # so delete is restricted to specific pod ordinals in its own rule while
+  # get/list/watch remain unrestricted for topology discovery.
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+  # This guard is the sole defence against a namespace-wide "pods: delete" fail-open:
+  # when clusterSize <= 0, the ordinal range below would produce zero resourceNames
+  # entries, and an empty/absent resourceNames list is read by Kubernetes RBAC as
+  # unrestricted (not restrictive) - so at clusterSize <= 0 the whole rule must be
+  # omitted entirely, not merely rendered with an empty resourceNames list. Do not
+  # remove this guard.
+  {{- if gt (int .Values.valkey.internal.clusterSize) 0 }}
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    resourceNames:
+      {{- include "valkey.internal.podOrdinalResourceNames" . | nindent 6 }}
+    verbs:
+      - delete
+  {{- end }}
+{{- end }}

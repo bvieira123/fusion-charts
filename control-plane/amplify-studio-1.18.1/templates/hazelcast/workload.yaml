@@ -1,0 +1,123 @@
+{{- if .Values.hazelcast.enabled }}
+apiVersion: apps/v1
+kind: {{ default .Values.hazelcast.kind | default "StatefulSet" | quote }}
+metadata:
+  name: {{ template "hazelcast.appName" . }}
+  {{- with .Release.Namespace }}
+  namespace:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  labels:
+    {{- include "hazelcast.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.hazelcast.replicaCount }}
+  {{- if eq (lower .Values.hazelcast.kind) "statefulset" }}
+  serviceName: {{ template "hazelcast.appName" . }}
+  {{- end }}
+  {{- if eq (lower .Values.hazelcast.kind) "deployment" }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ .Values.hazelcast.maxSurge }}
+      maxUnavailable: {{ .Values.hazelcast.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "hazelcast.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.hazelcast.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "hazelcast.selectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.hazelcast.terminationGracePeriodSeconds }}
+      {{- with .Values.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.hazelcast.serviceAccount.enabled }}
+      serviceAccountName: {{ include "hazelcast.serviceAccountName" . }}
+      {{- end }}
+      {{- with .Values.hazelcast.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ template "hazelcast.appName" . }}
+          securityContext:
+            {{- toYaml .Values.hazelcast.securityContext | nindent 12 }}
+          image: "{{ default .Values.image.repository .Values.hazelcast.image.repository }}/{{ .Values.hazelcast.image.name }}:{{ .Values.hazelcast.image.buildTag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: hazelcast-port
+              containerPort: 5701
+          volumeMounts:
+          - name: {{ template "hazelcast.appName" . }}
+            mountPath: /data/hazelcast
+          - name: {{ .Values.storage.volumeMounts.name }}
+            mountPath: /efs
+          - name: tmp
+            mountPath: /tmp
+          {{- if eq (lower .Values.hazelcast.kind) "statefulset" }}
+          - name: {{ .Values.hazelcast.persistence.claimTemplateName }}
+            mountPath: /mdisk
+          {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ template "hazelcast.appName" . }}
+            - configMapRef:
+                name: {{ "configmap-common" }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          {{- with .Values.hazelcast.env }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.hazelcast.resources | nindent 12 }}
+          livenessProbe: {{- include "common.probe" .Values.hazelcast.livenessProbe | nindent 12 }}
+          startupProbe: {{- include "common.probe" .Values.hazelcast.startupProbe | nindent 12 }}
+          readinessProbe: {{- include "common.probe" .Values.hazelcast.readinessProbe | nindent 12 }}
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: {{ template "hazelcast.appName" . }}
+        configMap:
+          name: {{ .Values.hazelcast.hazelcastYaml }}
+      - name: {{ .Values.storage.volumeMounts.name }}
+        persistentVolumeClaim:
+          claimName: {{ .Values.storage.persistentVolumeClaim.claimName }}
+      {{- with .Values.hazelcast.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.hazelcast.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.hazelcast.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if eq (lower .Values.hazelcast.kind) "statefulset" }}
+  volumeClaimTemplates:
+    - metadata:
+        name: {{ .Values.hazelcast.persistence.claimTemplateName }}
+      spec:
+        accessModes:
+          - {{ .Values.hazelcast.persistence.claimTemplateAccessModes }}
+        storageClassName: "{{ .Values.hazelcast.persistence.claimTemplateStorageClass }}"
+        resources:
+          requests:
+            storage: "{{ .Values.hazelcast.persistence.claimTemplateRequestStorage }}"
+  {{- end }}
+{{- end }}

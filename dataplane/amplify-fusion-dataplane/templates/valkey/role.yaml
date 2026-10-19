@@ -1,0 +1,46 @@
+{{- if and (eq (include "valkey.internal.sa.enabled" .) "true") (not .Values.valkey.internal.serviceAccount.preexisting) }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ template "valkey.name" . }}-role
+rules:
+  # get-only: readiness needs to check whether the next ordinal's pod exists yet.
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    resourceNames:
+      {{- include "valkey.internal.podOrdinalResourceNames" . | nindent 6 }}
+    verbs:
+      - get
+  {{- if eq (include "valkey.internal.subQuorumFailoverRequired" .) "true" }}
+  # Split from the signal Lease below deliberately - do NOT merge these two rules back
+  # into one resourceNames list. lease-watchdog.sh only ever GETs the leader-election
+  # Lease (lease_reachable(), which reads nothing from the body and exists purely as an
+  # API-server reachability probe), so granting patch on it would let any Valkey pod -
+  # the least-trusted workload in this topology - merge-patch spec.holderIdentity or
+  # renewTime and stop both controller replicas from ever believing they hold
+  # leadership, disabling failover entirely.
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    resourceNames:
+      - {{ .Values.valkey.internal.failoverController.leaderElection.leaseName }}
+    verbs:
+      - get
+  # The signal Lease is the one Valkey pods legitimately write: lease-watchdog.sh PATCHes
+  # the fence-heartbeat annotation, and pre-stop.sh PATCHes the graceful-shutdown
+  # annotation. Matches FailoverLeaderElection.ensureSignalLeaseExists()'s documented
+  # assumption that Valkey pods hold get/patch on this Lease only, and never create.
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    resourceNames:
+      - {{ .Values.valkey.internal.failoverController.leaderElection.signalLeaseName }}
+    verbs:
+      - get
+      - patch
+  {{- end }}
+{{- end }}

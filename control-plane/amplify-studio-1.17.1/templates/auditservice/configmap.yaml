@@ -1,0 +1,19 @@
+{{- if eq .Values.common.externalConfigMaps false }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "auditservice.appName" . }}
+  namespace: {{ .Release.Namespace }}
+data:
+  spring_datasource_url: jdbc:postgresql://{{ .Values.global.rdb_endpoint }}/{{ .Values.global.rdb_name }}
+  hazelcast_server_ip: {{ template "hazelcast.appName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  environment: {{ .Values.global.appEnv }}
+  domain: {{ .Values.global.external_domain }}
+  JAVA_OPTS: {{ .Values.auditservice.xms_xmx }}
+  audit_service_url: http://{{ template "auditservice.appName" . }}:{{ .Values.global.auditSvcPort }}/auditservice/createauditconsumer
+  tenant_namespace: "{{ .Release.Namespace }}"
+  audit_service_hostname: {{ template "auditservice.appName" . }}
+  audit_consumer_count: "{{ .Values.auditservice.audit_consumer_count }}"
+  audit_batch_size: "{{ .Values.auditservice.audit_batch_size }}"
+  audit_processing_threads_tenant: "{{ .Values.auditservice.audit_processing_threads_tenant }}"
+{{- end }}

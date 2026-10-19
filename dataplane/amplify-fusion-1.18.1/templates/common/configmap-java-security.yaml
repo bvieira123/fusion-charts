@@ -1,0 +1,11 @@
+{{- if or .Values.inboundWorker.enabled .Values.orchestrator.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-java-security
+  namespace: {{ .Release.Namespace }}
+data:
+  java.security: |-
+    # TLS_RSA is intentionally omitted to allow TLS_RSA_WITH_AES_256_GCM_SHA384.
+    jdk.tls.disabledAlgorithms=SSLv3, TLSv1, TLSv1.1, DTLSv1.0, RC4, DES, MD5withRSA, DH keySize < 1024, EC keySize < 224, 3DES_EDE_CBC, anon, NULL, ECDH, include jdk.disabled.namedCurves
+{{- end }}

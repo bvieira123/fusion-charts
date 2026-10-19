@@ -1,0 +1,38 @@
+{{- if .Values.marketplaceAgent.calicoNetpol.enabled }}
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: {{ template "marketplace-agent.appName" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  order: 10
+  selector: ampint.ctlplane == 'marketplace-agent'
+  types:
+    - Egress
+  egress:
+    - action: Allow
+      protocol: TCP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    # allow to communicate with k8s api server
+    - action: Allow
+      destination:
+        services:
+          name: kubernetes
+          namespace: default
+      protocol: TCP
+    # allow: pod -> hazelcast
+    - action: Allow
+      protocol: TCP
+      destination:
+        selector: ampint.ctlplane == 'hazelcast'
+        ports:
+          - 5701
+    ### Traffic to the internet ###
+    ###outbound
+    - action: Allow
+      protocol: TCP
+      destination: {{ toYaml .Values.marketplaceAgent.calicoNetpol.outboundRule | nindent 8 }}
+{{- end }}

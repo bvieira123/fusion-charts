@@ -1,0 +1,14 @@
+{{- if .Values.tls.domainCertWatch.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "domainCertWatch.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dataplane.labels" . | nindent 4 }}
+data:
+  sha: {{ template "domainCertWatch.domainCertHash" . }}
+{{- if .Values.tls.sshCertificate.enabled }}
+  ssh_sha: {{ template "domainCertWatch.sshCertHash" . }}
+{{- end }}
+{{- end }}

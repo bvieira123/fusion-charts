@@ -1,0 +1,124 @@
+{{- if .Values.auditservice.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ template "auditservice.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "auditservice.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.auditservice.autoscaling.enabled }}
+  replicas: {{ .Values.auditservice.replicaCount }}
+  {{- end }}
+  minReadySeconds: 60
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ .Values.auditservice.maxSurge }}
+      maxUnavailable: {{ .Values.auditservice.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "auditservice.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.auditservice.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "auditservice.selectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.auditservice.terminationGracePeriodSeconds }}
+      {{- with .Values.global.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.auditservice.serviceAccount.enabled }}
+      serviceAccountName: {{ include "auditservice.serviceAccountName" . }}
+      {{- end }}
+      {{- with .Values.auditservice.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      dnsConfig:
+        options:
+          - name: use-vc
+      initContainers:
+        - name: wait-predeploy
+          securityContext:
+            {{- toYaml .Values.auditservice.securityContext | nindent 12 }}
+          image: "{{ default .Values.global.image.repository .Values.global.alpinetools.image.repository }}/{{ .Values.global.alpinetools.image.name }}:{{ .Values.global.alpinetools.image.buildTag }}"
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          command:
+            - "/bin/sh"
+            - "-c"
+            - >
+              sleep 4;
+              if [[ "$(kubectl get pod --no-headers -o custom-columns=":metadata.name" --selector=ampint.ctlplane==master-schema-job)" != "" ]];
+              then until kubectl wait --for=condition=complete --timeout=0 job/$(kubectl get job --no-headers -o custom-columns=":metadata.name" --selector=ampint.ctlplane==master-schema-job);
+              do echo "waiting for predeploy job to complete"; sleep 30; done; else echo "Predeploy not running" exit; fi
+          {{- with .Values.global.initContainers.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      containers:
+        - name: {{ template "auditservice.appName" . }}
+          securityContext:
+            {{- toYaml .Values.auditservice.securityContext | nindent 12 }}
+          image: "{{ default .Values.global.image.repository .Values.auditservice.image.repository }}/{{ .Values.auditservice.image.name }}:{{ .Values.auditservice.image.buildTag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.common.postgresCredentials.name }}
+            - secretRef:
+                name: {{ .Values.common.mongoDB.name }}
+            {{- if .Values.auditservice.ClusterSecretKey.enabled }}
+            - secretRef:
+                name: {{ .Values.common.clusterDetails.name }}
+            {{- end }}
+            - configMapRef:
+                name: {{ template "auditservice.appName" . }}
+            - configMapRef:
+                name: {{ .Values.global.commonConfigmap }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          {{- with .Values.auditservice.env }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - containerPort: 9080
+              name: http
+            - containerPort: 8181
+              name: management
+          resources:
+            {{- toYaml .Values.auditservice.resources | nindent 12 }}
+          volumeMounts:
+            - name: {{ .Values.global.volumeMounts.name }}
+              mountPath: /efs
+            - name: tmpdir
+              mountPath: /tmp
+          livenessProbe: {{- toYaml .Values.auditservice.livenessProbe | nindent 12 }}
+          startupProbe: {{- toYaml .Values.auditservice.startupProbe | nindent 12 }}
+          readinessProbe: {{- toYaml .Values.auditservice.readinessProbe | nindent 12 }}
+      volumes:
+      - name: tmpdir
+        emptyDir: {}
+      - name: {{ .Values.global.volumeMounts.name }}
+        persistentVolumeClaim:
+          claimName: {{ .Values.global.persistentVolumeClaim.claimName }}
+      {{- with .Values.auditservice.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.auditservice.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.auditservice.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

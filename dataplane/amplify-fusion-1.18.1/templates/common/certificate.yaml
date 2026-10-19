@@ -1,0 +1,59 @@
+{{- if not .Values.tls.domainCertificate.manuallyCreated -}}
+{{- if gt (atoi (trimSuffix "h" .Values.tls.domainCertificate.rotationPeriod)) 8760 -}}
+{{- fail "tls.domainCertificate.rotationPeriod exceeds the maximum allowed value of 8760h (1 year)" -}}
+{{- end -}}
+{{- if eq .Values.tls.domainCertificate.algorithm "RSA" -}}
+{{- if lt (int .Values.tls.domainCertificate.keySize) 2048 -}}
+{{- fail "tls.domainCertificate.keySize must be at least 2048 for RSA" -}}
+{{- end -}}
+{{- else if eq .Values.tls.domainCertificate.algorithm "ECDSA" -}}
+{{- $ks := int .Values.tls.domainCertificate.keySize -}}
+{{- if not (or (eq $ks 256) (eq $ks 384) (eq $ks 521)) -}}
+{{- fail "tls.domainCertificate.keySize must be one of 256, 384, 521 for ECDSA" -}}
+{{- end -}}
+{{- end -}}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: domain-certificate
+spec:
+  # Secret names are always required.
+  secretName: domain-certificate
+  duration: {{ .Values.tls.domainCertificate.rotationPeriod }}
+  renewBefore: {{ .Values.tls.domainCertificate.renewBefore }}
+  subject: {{- toYaml .Values.tls.domainCertificate.subject | nindent 4 }}
+  {{- if eq  (include "parent.dataplaneMode" . ) "shared" }}
+  commonName: "*.{{ .Values.external_domain }}"
+  {{- else if .Values.multihost.enabled }}
+  commonName: "*.{{ .Values.external_domain }}"
+  {{- else }}
+  commonName: "{{ .Values.external_domain }}"
+  {{- end }}
+  isCA: false
+  privateKey:
+    algorithm: {{ .Values.tls.domainCertificate.algorithm }}
+    encoding: PKCS8
+    {{- if ne .Values.tls.domainCertificate.algorithm "Ed25519" }}
+    size: {{ .Values.tls.domainCertificate.keySize }}
+    {{- end }}
+    rotationPolicy: {{ .Values.tls.domainCertificate.rotationPolicy }}
+  dnsNames:
+    {{- if eq  (include "parent.dataplaneMode" . ) "shared" }}
+    - "*.{{ .Values.external_domain }}"
+    {{- else if .Values.multihost.enabled }}
+    - "*.{{ .Values.external_domain }}"
+    {{- end }}
+    - {{ .Values.external_domain }}
+  issuerRef:
+    name: {{ .Values.tls.domainCertificate.issuerRef.name }}
+    kind: {{ .Values.tls.domainCertificate.issuerRef.kind }}
+  keystores:
+    pkcs12:
+      create: true
+      profile: LegacyDES
+      passwordSecretRef:
+        name: certificate-password
+        key: password
+{{- else }}
+{{- $existingSecret := (lookup "v1" "Secret" .Release.Namespace "domain-certificate" ).metadata | required "Secret 'domain-certificate' containing p12 certificate is required. Create it external to helm chart or set tls.domainCertificate.manuallyCreated to false to autogenerate cert using cert-manager" }}
+{{- end -}}

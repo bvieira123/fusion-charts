@@ -1,0 +1,33 @@
+{{- if .Values.inboundWorker.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ template "inbound-worker.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "inbound-worker.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ template "inbound-worker.appName" . }}
+  minReplicas: {{ .Values.inboundWorker.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.inboundWorker.autoscaling.maxReplicas }}
+  metrics:
+    {{- if .Values.inboundWorker.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.inboundWorker.autoscaling.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.inboundWorker.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.inboundWorker.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- end }}
+{{- end }}

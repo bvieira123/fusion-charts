@@ -1,0 +1,109 @@
+{{- if and .Values.zerotrust.enabled (not .Values.zerotrust.providers.spire.preexisting) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "spire-server.fullname" . }}
+  namespace: {{ include "spire.namespace" . }}
+  annotations:
+    {{ include "spire.keepAnnotation" . | nindent 4 }}
+  labels:
+    {{ include "spire-server.labels" . | nindent 4 }}
+data:
+  server.conf: |
+    server {
+      bind_address = "0.0.0.0"
+      bind_port = "8081"
+      socket_path = "/tmp/spire-server/private/api.sock"
+      trust_domain = "{{ .Values.zerotrust.providers.spire.trustDomain }}"
+      data_dir = "/run/spire/data"
+      log_level = "INFO"
+      default_x509_svid_ttl = "{{ .Values.zerotrust.providers.spire.server.agentSvidTTL }}"
+      ca_ttl = "{{ .Values.zerotrust.providers.spire.server.caTTL }}"
+      ca_subject {
+        country = ["{{ .Values.zerotrust.providers.spire.caSubject.country }}"]
+        organization = ["{{ .Values.zerotrust.providers.spire.caSubject.organization }}"]
+        common_name = "{{ .Values.zerotrust.providers.spire.caSubject.commonName }}"
+      }
+    }
+    plugins {
+      DataStore "sql" {
+        plugin_data {
+          database_type = "sqlite3"
+          connection_string = "/run/spire/data/datastore.sqlite3"
+        }
+      }
+      NodeAttestor "k8s_psat" {
+        plugin_data {
+          clusters = {
+            "{{ .Values.zerotrust.providers.spire.clusterName }}" = {
+              service_account_allow_list = ["{{ include "spire.namespace" . }}:{{ include "spire-agent.serviceAccountName" . }}"]
+            }
+          }
+        }
+      }
+      {{- if eq .Values.zerotrust.providers.spire.server.keyManager.type "aws" }}
+      KeyManager "aws_kms" {
+        plugin_data {
+          region = "{{ .Values.global.kms.aws.region }}"
+          {{- if eq .Values.zerotrust.providers.spire.server.keyManager.keyIdentifier.type "value" }}
+          key_identifier_value = "{{ .Values.zerotrust.providers.spire.server.keyManager.keyIdentifier.value }}"
+          {{- else }}
+          key_identifier_file = "/run/spire/data/kms-key-id"
+          {{- end }}
+          {{- if .Values.global.kms.aws.keyTags }}
+          key_tags = {
+            {{- range $k, $v := .Values.global.kms.aws.keyTags }}
+            "{{ $k }}" = "{{ $v }}"
+            {{- end }}
+          }
+          {{- end }}
+        }
+      }
+      {{- else if eq .Values.zerotrust.providers.spire.server.keyManager.type "memory" }}
+      KeyManager "memory" {}
+      {{- else }}
+      KeyManager "disk" {
+        plugin_data {
+          keys_path = "/run/spire/data/keys.json"
+        }
+      }
+      {{- end }}
+      Notifier "k8sbundle" {
+        plugin_data {
+          namespace = "{{ include "spire.namespace" . }}"
+          config_map_name = "{{ .Values.zerotrust.providers.spire.server.bundleConfigMapName }}"
+        }
+      }
+      {{- if eq .Values.zerotrust.providers.spire.server.upstreamAuthority.type "disk" }}
+      UpstreamAuthority "disk" {
+        plugin_data {
+          cert_file_path = "/run/spire/upstream-ca/tls.crt"
+          key_file_path  = "/run/spire/upstream-ca/tls.key"
+        }
+      }
+      {{- else if eq .Values.zerotrust.providers.spire.server.upstreamAuthority.type "certManager" }}
+      UpstreamAuthority "cert-manager" {
+        plugin_data {
+          namespace    = "{{ .Values.zerotrust.providers.spire.server.upstreamAuthority.certManager.namespace }}"
+          issuer_name  = "{{ .Values.zerotrust.providers.spire.server.upstreamAuthority.certManager.issuerName }}"
+          issuer_kind  = "{{ .Values.zerotrust.providers.spire.server.upstreamAuthority.certManager.issuerKind }}"
+          issuer_group = "{{ .Values.zerotrust.providers.spire.server.upstreamAuthority.certManager.issuerGroup }}"
+        }
+      }
+      {{- else if eq .Values.zerotrust.providers.spire.server.upstreamAuthority.type "awsPca" }}
+      UpstreamAuthority "aws_pca" {
+        plugin_data {
+          region                     = "{{ .Values.zerotrust.providers.spire.server.upstreamAuthority.awsPca.region }}"
+          certificate_authority_arn  = "{{ .Values.zerotrust.providers.spire.server.upstreamAuthority.awsPca.certificateAuthorityArn }}"
+        }
+      }
+      {{- end }}
+    }
+    health_checks {
+      listener_enabled = true
+      bind_address = "0.0.0.0"
+      bind_port = "8080"
+      live_path = "/live"
+      ready_path = "/ready"
+    }
+{{- end }}

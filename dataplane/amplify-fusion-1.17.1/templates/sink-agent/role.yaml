@@ -1,0 +1,7 @@
+{{- if ( and .Values.sinkAgent.serviceAccount.enabled ( not .Values.sinkAgent.serviceAccount.preexisting ) ) -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ template "sink-agent.name" . }}-role
+rules: []
+{{- end }}

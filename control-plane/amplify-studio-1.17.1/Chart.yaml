@@ -1,0 +1,5 @@
+apiVersion: v2
+description: Amplify Studio chart for Kubernetes
+name: amplify-studio
+type: application
+version: 1.17.1

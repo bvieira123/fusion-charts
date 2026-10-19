@@ -1,0 +1,265 @@
+{{- if .Values.fluentBit.enabled -}}
+apiVersion: apps/v1
+kind: {{ .Values.fluentBit.kind }}
+metadata:
+  name: {{ template "fluent-bit.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fluent-bit.labels" . | nindent 4 }}
+    {{- with .Values.fluentBit.labels }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.fluentBit.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "fluent-bit.selectorLabels" . | nindent 6 }}
+  {{- if eq .Values.fluentBit.kind "Deployment" }}
+  strategy:
+    type: Recreate
+  {{- else if eq .Values.fluentBit.kind "DaemonSet" }}
+  {{- with .Values.fluentBit.updateStrategy }}
+  updateStrategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+  {{- with .Values.fluentBit.minReadySeconds }}
+  minReadySeconds: {{ . }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "fluent-bit.selectorLabels" . | nindent 8 }}
+        {{- with .Values.fluentBit.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.zerotrust.enabled }}
+        {{ .Values.zerotrust.managedLabel }}: "true"
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/fluent-bit/configmap_" ( lower .Values.fluentBit.kind ) ".yaml") . | sha256sum }}
+        {{- if eq .Values.fluentBit.kind "DaemonSet" }}
+        checksum/luascripts: {{ include (print $.Template.BasePath "/fluent-bit/configmap-luascript.yaml") . | sha256sum }}
+        {{- end }}
+      {{- with .Values.fluentBit.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "fluent-bit.serviceAccountName" . }}
+      {{- with .Values.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 6 }}
+      {{- end }}
+      {{- if .Values.fluentBit.podSecurityContextEnabled -}}
+      {{- with .Values.fluentBit.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}
+      {{- with .Values.fluentBit.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ . }}
+      {{- end }}
+      hostNetwork: {{ .Values.fluentBit.hostNetwork }}
+      dnsPolicy: {{ .Values.fluentBit.dnsPolicy }}
+      #forces the use of tcp for dns resolutions
+      dnsConfig:
+        options:
+          - name: use-vc
+      restartPolicy: {{ .Values.fluentBit.restartPolicy }}
+      schedulerName: {{ .Values.fluentBit.schedulerName }}
+      {{- if eq .Values.fluentBit.kind "DaemonSet" }}
+      initContainers:
+        - name: migrate-storage-db
+          image: {{ include "fluent-bit.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.fluentBit.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /var/log/fluent-bit/storage/{{ .Release.Namespace }}
+              for f in /var/log/fluent-bit/storage/*.db /var/log/fluent-bit/storage/*.db-wal /var/log/fluent-bit/storage/*.db-shm; do
+                [ -f "$f" ] && mv "$f" /var/log/fluent-bit/storage/{{ .Release.Namespace }}/
+              done
+              for d in /var/log/fluent-bit/storage/tail.*; do
+                [ -d "$d" ] && mv "$d" /var/log/fluent-bit/storage/{{ .Release.Namespace }}/
+              done
+              true
+          volumeMounts:
+            - name: varlog
+              mountPath: /var/log
+        {{- with .Values.fluentBit.initContainers }}
+        {{- if kindIs "string" . }}
+          {{- tpl . $ | nindent 8 }}
+        {{- else }}
+          {{- toYaml . | nindent 8 }}
+        {{- end -}}
+        {{- end }}
+      {{- else }}
+      {{- with .Values.fluentBit.initContainers }}
+      initContainers:
+      {{- if kindIs "string" . }}
+        {{- tpl . $ | nindent 6 }}
+      {{- else }}
+        {{-  toYaml . | nindent 6 }}
+      {{- end -}}
+      {{- end }}
+      {{- end }}
+      containers:
+        {{- if .Values.zerotrust.enabled }}
+        - name: {{ include "fluent-bit.appName" . }}-certs-refresh
+          image: {{ .Values.image.repository }}/{{ .Values.zerotrust.providers.spire.tools.image.name }}:{{ .Values.zerotrust.providers.spire.tools.image.buildTag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+                  {{- with .Values.fluentBit.securityContext }}
+          securityContext:
+                    {{- toYaml . | nindent 12 }}
+                  {{- end }}
+          command: ["/bin/bash", "/scripts/spire-cert-refresh.sh"]
+          env:
+            - name: CERT_DIR
+              value: /tls
+            - name: SPIRE_AGENT_SOCKET_PATH
+              value: /spire/spire-agent.sock
+            - name: AGENT_READINESS_TIMEOUT
+              value: {{ .Values.zerotrust.providers.spire.tools.agentReadiness.timeoutSeconds | quote }}
+            - name: CERT_CHECK_IN_SECONDS
+              value: {{ .Values.zerotrust.providers.spire.tools.certRefresh.checkIntervalSeconds | quote }}
+            - name: CERT_RENEW_BEFORE_EXPIRY_SECONDS
+              value: {{ .Values.zerotrust.providers.spire.tools.certRefresh.renewBeforeExpirySeconds | quote }}
+          volumeMounts:
+            - name: spire-agent-socket
+              mountPath: /spire
+              readOnly: true
+            - name: tls-certs
+              mountPath: /tls
+          {{- with .Values.zerotrust.providers.spire.tools.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
+        - name: {{ include "fluent-bit.appName" . }}
+        {{- with .Values.fluentBit.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+        {{- end }}
+          image: {{ include "fluent-bit.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+          {{- if eq .Values.fluentBit.kind "DaemonSet" }}
+            - name: write_app_logs_to_efs
+              value: {{ .Values.fluentBit.writeAppLogsToEfs | quote }}
+          {{- end }}
+          {{- with .Values.fluentBit.env }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- range $item := .Values.fluentBit.envWithTpl }}
+            - name: {{ $item.name }}
+              value: {{ tpl $item.value $ | quote }}
+          {{- end }}
+          envFrom:
+            - configMapRef:
+                name: configmap-common
+            {{- if .Values.fluentBit.envFrom }}
+              {{- toYaml .Values.fluentBit.envFrom | nindent 12 }}
+            {{- end }}
+        {{- with .Values.fluentBit.command }}
+          command:
+            {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- if .Values.fluentBit.args }}
+          args:
+            {{- toYaml .Values.fluentBit.args | nindent 10 }}
+        {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.fluentBit.metricsPort }}
+              protocol: TCP
+          {{- if .Values.fluentBit.extraPorts }}
+            {{- range .Values.fluentBit.extraPorts }}
+            - name: {{ .name }}
+              containerPort: {{ .containerPort }}
+              protocol: {{ .protocol }}
+            {{- end }}
+          {{- end }}
+          livenessProbe: {{- toYaml .Values.fluentBit.livenessProbe | nindent 12 }}
+          startupProbe: {{- toYaml .Values.fluentBit.startupProbe | nindent 12 }}
+          readinessProbe: {{- toYaml .Values.fluentBit.readinessProbe | nindent 12 }}
+        {{- with .Values.fluentBit.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+        {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /fluent-bit/etc/fluent-bit.conf
+              subPath: fluent-bit.conf
+            - mountPath: /efs
+              name: {{ .Values.storage.volumeStorageName }}
+          {{- if .Values.zerotrust.enabled }}
+            - name: tls-certs
+              mountPath: /tls
+          {{- end }}
+          {{- if eq .Values.fluentBit.kind "DaemonSet" }}
+            - name: config
+              mountPath: /fluent-bit/etc/custom_parsers.conf
+              subPath: custom_parsers.conf
+            - mountPath: /fluent-bit/etc/lua
+              name: lua-scripts
+          {{- toYaml .Values.fluentBit.daemonSetVolumeMounts | nindent 12 }}
+          {{- end }}
+          {{- if .Values.fluentBit.extraVolumeMounts }}
+            {{- toYaml .Values.fluentBit.extraVolumeMounts | nindent 12 }}
+          {{- end }}
+      {{- if .Values.fluentBit.extraContainers }}
+        {{- if kindIs "string" .Values.fluentBit.extraContainers }}
+          {{- tpl .Values.fluentBit.extraContainers $ | nindent 2 }}
+        {{- else }}
+          {{-  toYaml .Values.fluentBit.extraContainers | nindent 2 }}
+        {{- end -}}
+      {{- end }}
+      {{- with .Values.fluentBit.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.fluentBit.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.fluentBit.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.fluentBit.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      volumes:
+        {{- if .Values.zerotrust.enabled }}
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/sockets
+            type: DirectoryOrCreate
+        - name: tls-certs
+          emptyDir: { }
+        {{- end }}
+        - name: {{ .Values.storage.volumeStorageName }}
+          persistentVolumeClaim:
+            claimName: {{ .Release.Namespace }}-{{ .Values.storage.claimName }}
+        - name: config
+          configMap:
+            name: {{ default (include "fluent-bit.appName" .) .Values.fluentBit.existingConfigMap }}
+      {{- if eq .Values.fluentBit.kind "DaemonSet" }}
+        - name: lua-scripts
+          configMap:
+            defaultMode: 420
+            name: {{ default (include "fluent-bit.appName" .) .Values.fluentBit.existingConfigMap }}-luascript
+      {{- toYaml .Values.fluentBit.daemonSetVolumes | nindent 8 }}
+      {{- end }}
+      {{- if .Values.fluentBit.extraVolumes }}
+        {{- toYaml .Values.fluentBit.extraVolumes | nindent 8 }}
+      {{- end }}
+{{- end }}

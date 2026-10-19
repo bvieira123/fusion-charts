@@ -1,0 +1,12 @@
+{{- if .Values.pepServer.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ template "pep-server.appName" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  minAvailable: {{ .Values.pepServer.podDisruptionBudget.minPods }}
+  selector:
+    matchLabels:
+      dplane: {{ .Chart.Name }}
+{{- end}}

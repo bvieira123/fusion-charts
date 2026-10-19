@@ -1,0 +1,33 @@
+{{- if .Values.marketplaceAgent.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ template "marketplace-agent.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "marketplace-agent.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ template "marketplace-agent.appName" . }}
+  minReplicas: {{ .Values.marketplaceAgent.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.marketplaceAgent.autoscaling.maxReplicas }}
+  metrics:
+    {{- if .Values.marketplaceAgent.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.marketplaceAgent.autoscaling.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.marketplaceAgent.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.marketplaceAgent.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- end }}
+{{- end }}

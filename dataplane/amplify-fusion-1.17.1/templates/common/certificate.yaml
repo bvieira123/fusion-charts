@@ -1,0 +1,45 @@
+{{- if .Values.common.certificate.enabled -}}
+{{- $existingSecret := (lookup "v1" "Secret" .Release.Namespace "domain-certificate" ).metadata | required "Secret 'domain-certificate' containing p12 certificate is required. Create it external to helm chart or set common.certificate.enabled to true, to autogenerate cert using cert-manager" }}
+{{- else }}
+{{- if gt (atoi (trimSuffix "h" .Values.common.certificate.generate.duration)) 8760 -}}
+{{- fail "common.certificate.generate.duration exceeds the maximum allowed value of 8760h (1 year)" -}}
+{{- end -}}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: domain-certificate
+spec:
+  # Secret names are always required.
+  secretName: domain-certificate
+  duration: {{ .Values.common.certificate.generate.duration }}
+  renewBefore: {{ .Values.common.certificate.generate.renewBefore }}
+  subject: {{- toYaml .Values.common.certificate.generate.subject | nindent 4 }}
+  {{- if eq  (include "parent.dataplaneMode" . ) "shared" }}
+  commonName: "*.{{ .Values.global.external_domain }}"
+  {{- else if .Values.global.multihost.enabled }}
+  commonName: "*.{{ .Values.global.external_domain }}"
+  {{- else }}
+  commonName: "{{ .Values.global.external_domain }}"
+  {{- end }}
+  isCA: false
+  privateKey:
+    algorithm: RSA
+    encoding: PKCS8
+    size: 2048
+    rotationPolicy: {{ .Values.common.certificate.generate.rotationPolicy }}
+  dnsNames:
+    {{- if eq  (include "parent.dataplaneMode" . ) "shared" }}
+    - "*.{{ .Values.global.external_domain }}"
+    {{- else if .Values.global.multihost.enabled }}
+    - "*.{{ .Values.global.external_domain }}"
+    {{- end }}
+    - {{ .Values.global.external_domain }}
+  issuerRef: {{- toYaml .Values.common.certificate.generate.issuerRef | nindent 4 }}
+  keystores:
+    pkcs12:
+      create: true
+      profile: LegacyDES
+      passwordSecretRef:
+        name: certificate-password
+        key: password
+{{- end -}}

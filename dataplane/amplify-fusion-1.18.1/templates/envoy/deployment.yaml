@@ -1,0 +1,179 @@
+{{- if .Values.envoy.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ template "envoy.appName" . }}
+  labels:
+{{ include "envoy.labels" . | indent 4 }}
+spec:
+  {{- if not .Values.envoy.autoscaling.enabled }}
+  replicas: {{ .Values.envoy.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "envoy.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: {{ .Values.envoy.strategy.type }}
+    rollingUpdate:
+      maxSurge: {{ .Values.envoy.strategy.rollingUpdate.maxSurge }}
+      maxUnavailable: {{ .Values.envoy.strategy.rollingUpdate.maxUnavailable }}
+  template:
+    metadata:
+      labels:
+        {{- include "envoy.selectorLabels" . | nindent 8 }}
+        {{- if .Values.zerotrust.enabled }}
+        {{ .Values.zerotrust.managedLabel }}: "true"
+        {{- end }}
+        {{- if .Values.envoy.podLabels }}
+        ## Custom pod labels
+        {{- range $key, $value := .Values.envoy.podLabels }}
+        {{ $key }}: {{ $value | quote }}
+        {{- end }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print .Template.BasePath "/envoy/configmap.yaml") . | sha256sum }}
+        {{- if .Values.envoy.podAnnotations }}
+        ## Custom pod annotations
+        {{- range $key, $value := .Values.envoy.podAnnotations }}
+        {{ $key }}: {{ $value | quote }}
+        {{- end }}
+        {{- end }}
+    spec:
+      {{- with .Values.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.envoy.podSecurityContextEnabled }}
+      securityContext:
+        {{ toYaml .Values.envoy.podSecurityContext | nindent 8 }}
+      {{- end }}
+      {{- if .Values.envoy.serviceAccount.enabled }}
+      serviceAccountName: {{ include "envoy.serviceAccountName" . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.envoy.terminationGracePeriodSeconds }}
+      #forces the use of tcp for dns resolutions
+      dnsConfig:
+        options:
+          - name: use-vc
+      {{- if .Values.fluentBit.enabled }}
+        {{- include "dataplane.createLogDirectoryInitContainer" (dict "serviceName" "envoy" "securityContext" .Values.envoy.securityContext "additionalPathParam" "" "root" .) | nindent 6 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.envoy.securityContext | nindent 12 }}
+          image: "{{ default .Values.image.repository .Values.envoy.image.repository }}/{{ .Values.envoy.image.name }}:{{ .Values.envoy.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.secrets.clusterDetails.name }}
+            - configMapRef:
+                name: configmap-common
+          command:
+            {{ toYaml .Values.envoy.command | nindent 12 }}
+          args:
+            {{- if $.Values.envoy.argsTemplate }}
+            {{ tpl $.Values.envoy.argsTemplate $ | nindent 12}}
+            {{- else }}
+            {{ toYaml .Values.envoy.args | nindent 12 }}
+            {{- end }}
+          ports:
+            {{- with .Values.envoy.adminPorts }}
+            {{- range $key, $port := . }}
+            - name: {{ $key }}
+              {{ toYaml $port | nindent 14 }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.multihost.enabled }}
+            - name: ssh
+              protocol: TCP
+              containerPort: 2222
+            - name: tls
+              protocol: TCP
+              containerPort: 8443
+            - name: http
+              protocol: TCP
+              containerPort: 9080
+            {{- else }}
+            {{- with .Values.envoy.ports }}
+            {{- range $key, $port := . }}
+            - name: {{ $key }}
+              {{ toYaml $port | nindent 14 }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+          livenessProbe: {{- toYaml .Values.envoy.livenessProbe | nindent 12 }}
+          startupProbe: {{- toYaml .Values.envoy.startupProbe | nindent 12 }}
+          readinessProbe: {{- toYaml .Values.envoy.readinessProbe | nindent 12 }}
+          env:
+            - name: server_cert_password
+              valueFrom:
+                secretKeyRef:
+                  key: password
+                  name: certificate-password
+            - name: LOGLEVEL
+              value: {{ .Values.envoy.logLevel | quote }}
+            {{- if .Values.logging.logJsonEnabled }}
+            - name: LOGFORMAT
+              value: {{ .Values.envoy.logFormat | quote }}
+            {{- end }}
+            {{- with .Values.envoy.env }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{ toYaml .Values.envoy.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: {{ .Values.storage.volumeStorageName }}
+              mountPath: /efs
+            {{- range $key, $value := .Values.envoy.secretMounts }}
+            - name: {{ $key }}
+              mountPath: {{ $value.mountPath }}
+            {{- end }}
+            - mountPath: "/certificate/{{ .Values.tls.domainCertificate.name }}"
+              subPath: {{ .Values.tls.domainCertificate.name }}
+              name: domain-certificate
+            {{- include "amplify-fusion.zerotrust.workloadVolumeMounts" . | nindent 12 }}
+          lifecycle:
+            {{ toYaml .Values.envoy.lifecycle | nindent 12 }}
+      {{- with .Values.envoy.nodeSelector }}
+      nodeSelector:
+        {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.envoy.affinity }}
+      affinity:
+        {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.envoy.tolerations }}
+      tolerations:
+        {{ toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: config
+          projected:
+            defaultMode: 420
+            sources:
+              - configMap:
+                  name: {{ template "envoy.appName" . }}
+        - name: workdir
+          emptyDir: {}
+        - name: {{ .Values.storage.volumeStorageName }}
+          persistentVolumeClaim:
+            claimName: {{ .Release.Namespace }}-{{ .Values.storage.claimName }}
+        {{- range $key, $value := .Values.envoy.secretMounts }}
+        - name: {{ $key }}
+          secret:
+            secretName: {{ $value.secretName }}
+            defaultMode: {{ $value.defaultMode }}
+        {{- end }}
+        - name: cert
+          emptyDir: {}
+        - name: domain-certificate
+          secret:
+            secretName: domain-certificate
+            items:
+              - key: {{ .Values.tls.domainCertificate.name }}
+                path: {{ .Values.tls.domainCertificate.name }}
+        {{- include "amplify-fusion.zerotrust.workloadVolumes" . | nindent 8 }}
+{{- end }}

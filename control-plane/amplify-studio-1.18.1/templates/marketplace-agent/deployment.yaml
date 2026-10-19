@@ -1,0 +1,135 @@
+{{- if .Values.marketplaceAgent.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ template "marketplace-agent.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "marketplace-agent.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.marketplaceAgent.autoscaling.enabled }}
+  replicas: {{ .Values.marketplaceAgent.replicaCount }}
+  {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ .Values.marketplaceAgent.maxSurge }}
+      maxUnavailable: {{ .Values.marketplaceAgent.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "marketplace-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.marketplaceAgent.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "marketplace-agent.selectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.marketplaceAgent.terminationGracePeriodSeconds }}
+      {{- with .Values.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.marketplaceAgent.serviceAccount.enabled }}
+      serviceAccountName: {{ include "marketplace-agent.serviceAccountName" . }}
+      {{- end }}
+      {{- with .Values.marketplaceAgent.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      dnsConfig:
+        options:
+          - name: use-vc
+      initContainers:
+        - name: wait-predeploy
+          securityContext:
+            {{- toYaml .Values.marketplaceAgent.securityContext | nindent 12 }}
+          image: "{{ default .Values.image.repository .Values.image.alpinetools.image.repository }}/{{ .Values.image.alpinetools.image.name }}:{{ .Values.image.alpinetools.image.buildTag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - "/bin/sh"
+            - "-c"
+            - >
+              sleep 4;
+              if [[ "$(kubectl get pod --no-headers -o custom-columns=":metadata.name" --selector=ampint.ctlplane==master-schema-job)" != "" ]];
+              then until kubectl wait --for=condition=complete --timeout=0 job/$(kubectl get job --no-headers -o custom-columns=":metadata.name" --selector=ampint.ctlplane==master-schema-job);
+              do echo "waiting for predeploy job to complete"; sleep 30; done; else echo "Predeploy not running" exit; fi
+          {{- with .Values.image.initContainers.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      containers:
+        - name: {{ template "marketplace-agent.appName" . }}
+          securityContext:
+            {{- toYaml .Values.marketplaceAgent.securityContext | nindent 12 }}
+          image: "{{ default .Values.image.repository .Values.marketplaceAgent.image.repository }}/{{ .Values.marketplaceAgent.image.name }}:{{ .Values.marketplaceAgent.image.buildTag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.secrets.mongoDB.name }}
+            - secretRef:
+                name: {{ .Values.secrets.postgres.name }}
+            - secretRef:
+                name: {{ .Values.secrets.clusterDetails.name }}
+            {{- if .Values.email.authentication.enabled }}
+            - secretRef:
+                name: {{ .Values.email.credentials.name }}
+            {{- end }}
+            - configMapRef:
+                name: {{ template "marketplace-agent.appName" . }}
+            - configMapRef:
+                name: {{ "configmap-common" }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: quarkus.datasource.username
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.postgres.name }}
+                  key: spring_datasource_username
+            - name: quarkus.datasource.password
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.postgres.name }}
+                  key: spring_datasource_password
+          {{- with .Values.marketplaceAgent.env }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - containerPort: 8080
+              name: agent
+            - containerPort: 8181
+              name: management
+          resources:
+            {{- toYaml .Values.marketplaceAgent.resources | nindent 12 }}
+          livenessProbe: {{- include "common.probe" .Values.marketplaceAgent.livenessProbe | nindent 12 }}
+          startupProbe: {{- include "common.probe" .Values.marketplaceAgent.startupProbe | nindent 12 }}
+          readinessProbe: {{- include "common.probe" .Values.marketplaceAgent.readinessProbe | nindent 12 }}
+          volumeMounts:
+            - name: {{ .Values.storage.volumeMounts.name }}
+              mountPath: /efs
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: {{ .Values.storage.volumeMounts.name }}
+        persistentVolumeClaim:
+          claimName: {{ .Values.storage.persistentVolumeClaim.claimName }}
+      {{- with .Values.marketplaceAgent.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.marketplaceAgent.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.marketplaceAgent.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

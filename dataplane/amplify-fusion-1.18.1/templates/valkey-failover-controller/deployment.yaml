@@ -1,0 +1,128 @@
+{{- if eq (include "valkey.internal.subQuorumFailoverRequired" .) "true" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ template "valkeyFailoverController.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "valkeyFailoverController.labels" . | nindent 4 }}
+spec:
+  # Hardcoded - leader election, the required self-anti-affinity below, and the PDB all
+  # assume exactly 2 replicas (see the replicaCount comment in values.yaml).
+  replicas: 2
+  # Hardcoded: maxUnavailable 0 / maxSurge 1 guarantees a new replica is Ready before an old
+  # one is removed, so leader-election coverage never drops below 2 replicas mid-rollout.
+  # minReadySeconds gives a bad rollout one full leader-election cycle to reveal itself
+  # before the last replica is touched.
+  minReadySeconds: {{ include "valkeyFailoverController.minReadySeconds" . }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{ include "valkeyFailoverController.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{ include "valkeyFailoverController.selectorLabels" . | nindent 8 }}
+        {{- if .Values.zerotrust.enabled }}
+        {{ .Values.zerotrust.managedLabel }}: "true"
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "valkeyFailoverController.serviceAccountName" . }}
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.valkey.internal.failoverController.terminationGracePeriodSeconds }}
+      securityContext:
+        {{ toYaml .Values.valkey.internal.failoverController.podSecurityContext | nindent 8 }}
+      {{- with .Values.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        {{- include "amplify-fusion.zerotrust.initContainers" . | nindent 8 }}
+      containers:
+        - name: {{ include "valkeyFailoverController.name" . }}
+          image: "{{ default .Values.image.repository .Values.valkey.internal.failoverController.image.repository }}/{{ .Values.valkey.internal.failoverController.image.name }}:{{ .Values.valkey.internal.failoverController.image.buildTag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{ toYaml .Values.valkey.internal.failoverController.securityContext | nindent 12 }}
+          ports:
+            - name: management
+              containerPort: 9000
+          env:
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: VALKEY_LEASE_NAME
+              value: "{{ .Values.valkey.internal.failoverController.leaderElection.leaseName }}"
+            - name: VALKEY_SIGNAL_LEASE_NAME
+              value: "{{ .Values.valkey.internal.failoverController.leaderElection.signalLeaseName }}"
+            - name: VALKEY_SECOND_OPINION_LEASE_NAME
+              value: "{{ .Values.valkey.internal.failoverController.leaderElection.secondOpinionLeaseName }}"
+            - name: VALKEY_LEASE_DURATION_SECONDS
+              value: "{{ .Values.valkey.internal.failoverController.leaderElection.leaseDurationSeconds }}"
+            - name: VALKEY_LEASE_RENEW_DEADLINE_SECONDS
+              value: "{{ .Values.valkey.internal.failoverController.leaderElection.renewDeadlineSeconds }}"
+            - name: VALKEY_LEASE_RETRY_PERIOD_SECONDS
+              value: "{{ .Values.valkey.internal.failoverController.leaderElection.retryPeriodSeconds }}"
+            - name: CLUSTER_SIZE
+              value: "{{ .Values.valkey.internal.clusterSize }}"
+            - name: SPIFFE_TRUST_DOMAIN
+              value: "spiffe://{{ .Values.zerotrust.providers.spire.trustDomain }}"
+            - name: PRIMARY_HEALTH_CHECK_INTERVAL
+              value: "{{ .Values.valkey.internal.failoverController.primaryHealthCheck.intervalSeconds }}s"
+            - name: PRIMARY_HEALTH_CHECK_UNHEALTHY_THRESHOLD
+              value: "{{ .Values.valkey.internal.failoverController.primaryHealthCheck.unhealthyThreshold }}"
+            - name: TERMINATION_CONTROLLER_CHECK_PRIMARY_DRAIN_SECS
+              value: "{{ .Values.valkey.internal.failoverController.terminationDrainSeconds }}"
+            - name: PRIMARY_HEALTH_CHECK_STONITH_CONFIRM_TIMEOUT
+              value: "{{ .Values.valkey.internal.failoverController.primaryHealthCheck.stonithConfirmTimeoutSeconds }}s"
+            - name: PRIMARY_HEALTH_CHECK_FENCE_HEARTBEAT_STALE_THRESHOLD
+              value: "{{ .Values.valkey.internal.failoverController.primaryHealthCheck.fenceHeartbeatStaleThresholdSeconds }}s"
+            - name: PRIMARY_HEALTH_CHECK_GRACEFUL_SHUTDOWN_STALE_THRESHOLD
+              value: "{{ .Values.valkey.internal.failoverController.primaryHealthCheck.gracefulShutdownStaleThresholdSeconds }}s"
+            - name: PRIMARY_HEALTH_CHECK_SECOND_OPINION_FRESHNESS_THRESHOLD
+              value: "{{ .Values.valkey.internal.failoverController.primaryHealthCheck.secondOpinionFreshnessThresholdSeconds }}s"
+            - name: PRIMARY_HEALTH_CHECK_SECOND_OPINION_REQUEST_TIMEOUT
+              value: "{{ .Values.valkey.internal.failoverController.primaryHealthCheck.secondOpinionRequestTimeoutSeconds }}s"
+            - name: PRIMARY_HEALTH_CHECK_MAX_REPLICA_VETO_CYCLES
+              value: "{{ .Values.valkey.internal.failoverController.primaryHealthCheck.maxReplicaVetoCycles }}"
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.datagrid.name }}
+                  key: datagrid_password
+            - name: VALKEY_SECURITY_MODE
+              value: "{{ include "valkeyFailoverController.securityMode" . }}"
+          volumeMounts:
+            - name: tmpdir
+              mountPath: /tmp
+            {{- include "amplify-fusion.zerotrust.workloadVolumeMounts" . | nindent 12 }}
+          startupProbe:
+            {{ toYaml .Values.valkey.internal.failoverController.startupProbe | nindent 12 }}
+          livenessProbe:
+            {{ toYaml .Values.valkey.internal.failoverController.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{ toYaml .Values.valkey.internal.failoverController.readinessProbe | nindent 12 }}
+          resources:
+            {{ toYaml .Values.valkey.internal.failoverController.resources | nindent 12 }}
+      volumes:
+        {{- include "amplify-fusion.zerotrust.workloadVolumes" . | nindent 6 }}
+      - name: tmpdir
+        emptyDir: {}
+      nodeSelector:
+        {{ toYaml .Values.valkey.internal.failoverController.nodeSelector | nindent 8 }}
+      {{- with .Values.valkey.internal.failoverController.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      tolerations:
+        {{ toYaml .Values.valkey.internal.failoverController.tolerations | nindent 8 }}
+{{- end }}

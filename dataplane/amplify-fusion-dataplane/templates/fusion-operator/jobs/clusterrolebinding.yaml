@@ -1,0 +1,18 @@
+{{- if and .Values.fusionOperator.enabled (eq (include "parent.dataplaneMode" . ) "shared") }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ template "fusionOperator.name" . }}-{{ .Release.Namespace }}-role-binding
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade,pre-delete
+    "helm.sh/hook-weight": "-1"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ template "fusionOperator.name" . }}-{{ .Release.Namespace }}-role
+subjects:
+- kind: ServiceAccount
+  name: {{ .Values.fusionOperator.job.serviceAccount.enabled | ternary .Values.fusionOperator.job.serviceAccount.name "default" }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}

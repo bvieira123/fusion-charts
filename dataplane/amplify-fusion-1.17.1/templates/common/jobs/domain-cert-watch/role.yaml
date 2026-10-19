@@ -1,0 +1,33 @@
+{{- if ( and .Values.common.domainCertWatch.serviceAccount.enabled ( not .Values.common.domainCertWatch.serviceAccount.preexisting ) ) -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ template "domainCertWatch.appName" . }}-role
+  labels:
+    {{- include "dataplane.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - patch
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - list
+      - patch
+      - update
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    verbs:
+      - get
+      - list
+      - patch
+{{- end }}

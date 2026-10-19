@@ -1,0 +1,38 @@
+{{- if eq .Values.externalConfigMaps false }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "api.appName" . }}
+  namespace: {{ .Release.Namespace }}
+data:
+  JAVA_OPTS: "{{ .Values.api.xms_xmx }}"
+  auth_service_base_url: http://{{ template "api.appName" . }}:{{ .Values.ports.apiAuthPort }}/api
+  #helper function for im.appName rendering as im-im instead of im-<appEnv> thus this syntax was required
+  monitor_service_base_url: http://im-{{ .Values.appEnv }}:{{ .Values.ports.imMonitorPort }}/api/monitor
+  database_masterschema: {{ .Values.database.name }}
+  spring_datasource_driver_class_name: org.postgresql.Driver
+  spring_datasource_url: jdbc:postgresql://{{ .Values.database.endpoint }}/{{ .Values.database.name }}
+  SPRING_DATASOURCE_HIKARI_MAXIMUMPOOLSIZE: "{{ .Values.api.database.maxPoolSize }}"
+  hazelcast_server_ip: {{ template "hazelcast.appName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  default_currency_code: {{ .Values.default_currency_code }}
+  environment: {{ .Values.appEnv }}
+  domain: {{ .Values.external_domain }}
+  singleTenantMode: "{{ .Values.singleTenantMode | default false }}"
+  {{- with .Values.api.requestBodyHash }}
+  requestBodyHashEnabled: "{{ .enabled }}"
+  requestBodyHashAlgorithm: "{{ .algorithm }}"
+  requestBodyHashHeaderName: "{{ .headerName }}"
+  {{- end }}
+  sftp_server_port: "{{ .Values.api.sftp_server_port }}"
+  tenant_namespace: "{{ .Release.Namespace }}"
+  haproxy_eip: "{{ .Values.shared_lb_prefix }}.{{ .Values.external_domain }}"
+  fulfillment_email: "{{ .Values.email.fulfillmentAddress }}"
+  tenant_approver_email: "{{ .Values.email.tenantApproverAddress }}"
+  cloud_provider: "{{ .Values.api.cloud_provider }}"
+  sse_cluster_name: "{{ .Values.api.sse_cluster_name }}"
+  deployed_version: "{{ .Values.api.image.buildTag }}"
+  {{- if .Values.api.aws.enabled }}
+  aws_route_53_zone_id: {{ .Values.api.aws.publicZoneId }}
+  aws_route_53_region: "{{ .Values.api.aws.region }}"
+  {{- end -}}
+{{- end }}

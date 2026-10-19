@@ -1,0 +1,82 @@
+{{- if eq (include "logrotate.enabled" .) "true" -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logrotate-{{ template "fluent-bit.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dataplane.labels" . | nindent 4 }}
+data:
+  dynamic-logrotate.sh: |
+    #!/bin/sh
+    set -e
+    STATE_FILE="/tmp/logrotate.status"
+    LOGROTATE_CONFIG="/tmp/dynamic-logrotate.conf"
+
+    # Determine base path based on dataplane mode
+    BASE_PATH="{{- if eq (include "parent.dataplaneMode" .) "shared" -}}/efs/logs{{- else -}}/efs/clusters/{{ tpl .Values.clusterRefId . }}/logs{{- end }}"
+
+    # List of service folders to scan
+    SERVICES="sink-agent inbound-worker pep-server orchestrator envoy fusion-operator{{ if (include "valkey.internal.enabled" .) }} valkey{{ end }}"
+
+    # Clean up the old config file
+    echo "" > "$LOGROTATE_CONFIG"
+
+     # Get running pod names in current namespace
+    POD_NAMES=$(kubectl get pods -n $(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace) \
+      --field-selector=status.phase=Running \
+      -o jsonpath='{.items[*].metadata.name}')
+
+    for svc in $SERVICES; do
+      for pod in $POD_NAMES; do
+        case "$svc" in
+          "envoy")
+            [[ "$pod" != *envoy* ]] && continue
+            LOG_PATH="$BASE_PATH/envoy/$pod/envoy.log"
+            ;;
+          "fusion-operator")
+            [[ "$pod" != *fusion-operator* ]] && continue
+            LOG_PATH="$BASE_PATH/fusion-operator/$pod/fusion-operator.log"
+            ;;
+          {{- if (include "valkey.internal.enabled" .) }}
+          "valkey")
+            [[ "$pod" != *valkey* ]] && continue
+            LOG_PATH="$BASE_PATH/valkey/$pod/valkey.log"
+            ;;
+          {{- end }}
+          "sink-agent")
+            [[ "$pod" != *sink-agent* ]] && continue
+            LOG_PATH="$BASE_PATH/sinkagent/$pod/sinkagent.log"
+            ;;
+          "inbound-worker")
+            [[ "$pod" != *inbound-worker* ]] && continue
+            LOG_PATH="$BASE_PATH/inbound/$pod/inbound/inbound.log"
+            ;;
+          "pep-server")
+            [[ "$pod" != *pep-server* ]] && continue
+            LOG_PATH="$BASE_PATH/pep-server/$pod/pep-server.log"
+            ;;
+          "orchestrator")
+            [[ "$pod" != *orchestrator* ]] && continue
+            LOG_PATH="$BASE_PATH/ir/$pod/orchestrator.log"
+            ;;
+        esac
+
+        if [ -f "$LOG_PATH" ]; then
+          echo "$LOG_PATH {
+              size 10M
+              rotate -1
+              missingok
+              dateext
+              dateformat .%Y-%m-%d-%H-%M
+              notifempty
+              create
+              nocompress
+          }" >> "$LOGROTATE_CONFIG"
+        fi
+      done
+    done
+
+    # Run logrotate with the generated config
+    /usr/sbin/logrotate -v --state "$STATE_FILE" "$LOGROTATE_CONFIG"
+    {{- end }}

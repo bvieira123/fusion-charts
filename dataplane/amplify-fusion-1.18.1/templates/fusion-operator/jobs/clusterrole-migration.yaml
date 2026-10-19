@@ -1,0 +1,42 @@
+{{- if and .Values.fusionOperator.enabled (eq (include "parent.dataplaneMode" . ) "shared") }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ template "fusionOperator.name" . }}-rbac-migration
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  ttlSecondsAfterFinished: {{ .Values.fusionOperator.job.updateJob_ttl }}
+  template:
+    metadata:
+      labels:
+        dplane: "rbac-migration-job"
+    spec:
+      {{- with .Values.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.fusionOperator.job.serviceAccount.enabled }}
+      serviceAccountName: {{ include "fusionOperator.job.serviceAccountName" . }}
+      {{- end }}
+      {{- if .Values.fusionOperator.podSecurityContextEnabled }}
+      securityContext: {{- toYaml .Values.fusionOperator.podSecurityContext | nindent 8 }}
+      {{- end }}
+      restartPolicy: OnFailure
+      containers:
+        - name: rbac-migration
+          securityContext: {{- toYaml .Values.fusionOperator.securityContext | nindent 12 }}
+          image: "{{ default .Values.image.repository .Values.image.alpinetools.image.repository }}/{{ .Values.image.alpinetools.image.name }}:{{ .Values.image.alpinetools.image.tag }}"
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # Clean up legacy fixed-name ClusterRole/ClusterRoleBinding from pre-namespace-qualified installs.
+              # --ignore-not-found handles fresh installs. || true handles the first upgrade from an old chart
+              # where the SA may not yet have rbac.authorization.k8s.io delete permissions.
+              kubectl delete clusterrole fusion-operator-role --ignore-not-found=true || true
+              kubectl delete clusterrolebinding fusion-operator-role-binding --ignore-not-found=true || true
+{{- end }}

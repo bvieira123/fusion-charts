@@ -1,0 +1,15 @@
+{{- if .Values.storage.nfs.enabled -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  # need to use efs here, though it's nfs, for compatibility with legacy setup
+  name: {{ .Release.Namespace }}-{{ .Values.storage.claimName }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - {{ .Values.storage.persistence.claimAccessMode }}
+  storageClassName: "{{ .Values.storage.nfs.storageClassName }}"
+  resources:
+    requests:
+      storage: {{ .Values.storage.persistence.claimRequestCapacity }}
+{{- end -}}

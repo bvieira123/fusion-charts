@@ -1,0 +1,5 @@
+{{- if not ( kindIs "string" .Values.acceptGeneralConditions ) }}
+{{- fail "The acceptGeneralConditions value must be a string. Check that you are using double quotes in your values file, or --set-string if using the command line. See the information in the values.yaml file, or on the online documentation." }}
+{{- else if ne .Values.acceptGeneralConditions "yes" }}
+{{- fail "You need to accept the General Conditions in order to install the application. See the information in the values.yaml file, or on the online documentation." }}
+{{- end }}

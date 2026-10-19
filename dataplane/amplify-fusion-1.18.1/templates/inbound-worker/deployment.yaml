@@ -1,0 +1,261 @@
+{{- if .Values.inboundWorker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ template "inbound-worker.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "inbound-worker.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.inboundWorker.autoscaling.enabled }}
+  replicas: {{ .Values.inboundWorker.replicaCount }}
+  {{- end }}
+  strategy:
+    type: {{ .Values.inboundWorker.strategy.type }}
+    rollingUpdate:
+      maxSurge: {{ .Values.inboundWorker.strategy.rollingUpdate.maxSurge }}
+      maxUnavailable: {{ .Values.inboundWorker.strategy.rollingUpdate.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "inbound-worker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/java-security: {{ include (print $.Template.BasePath "/common/configmap-java-security.yaml") . | sha256sum }}
+      {{- with .Values.inboundWorker.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "inbound-worker.selectorLabels" . | nindent 8 }}
+        {{- if .Values.zerotrust.enabled }}
+        {{ .Values.zerotrust.managedLabel }}: "true"
+        {{- end }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.inboundWorker.terminationGracePeriodSeconds }}
+      {{- with .Values.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.inboundWorker.serviceAccount.enabled }}
+      serviceAccountName: {{ include "inbound-worker.serviceAccountName" . }}
+      {{- end }}
+      {{- if .Values.inboundWorker.podSecurityContextEnabled }}
+      securityContext: {{- toYaml .Values.inboundWorker.podSecurityContext | nindent 8 }}
+      {{- end }}
+      dnsConfig:
+        options:
+          - name: use-vc
+      initContainers:
+        - name: {{ .Chart.Name }}-init
+          securityContext:
+            {{- toYaml .Values.inboundWorker.securityContext | nindent 12 }}
+          image: "{{ default .Values.image.repository .Values.image.alpinetools.image.repository }}/{{ .Values.image.alpinetools.image.name }}:{{ .Values.image.alpinetools.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+          envFrom:
+            - configMapRef:
+                name: configmap-common
+          volumeMounts:
+            - name: {{ .Values.storage.volumeStorageName }}
+              mountPath: /efs
+          command:
+            - "/bin/sh"
+            - "-c"
+            - |
+              {{- if .Values.valkey.internal.enabled }}
+              {{ include "dataplane.commonInit" (dict "context" . "buildTag" .Values.inboundWorker.image.buildTag "internal" true "replicas" .Values.valkey.internal.clusterSize) | nindent 14 }}
+              {{- else if .Values.valkey.external.enabled }}
+              {{ include "dataplane.commonInit" (dict "context" . "buildTag" .Values.inboundWorker.image.buildTag) | nindent 14 }}
+              {{- end }}
+
+              {{- if .Values.fluentBit.enabled }}
+              {{ include "dataplane.createLogDirectory" (dict "serviceName" "inbound" "efsRoot" "${efs_root}" "podName" "${POD_NAME}" "additionalPathParam" "inbound") | nindent 14 }}
+              {{- end }}
+          {{- with .Values.image.initContainers.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        - name: java-security-init
+          securityContext:
+            {{- toYaml .Values.inboundWorker.securityContext | nindent 12 }}
+          image: "{{ default .Values.image.repository .Values.image.alpinetools.image.repository }}/{{ .Values.image.alpinetools.image.name }}:{{ .Values.image.alpinetools.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - cp /java-security-config/java.security /java-security/java.security
+          volumeMounts:
+            - name: fusion-java-security-config
+              mountPath: /java-security-config
+              readOnly: true
+            - name: fusion-java-security
+              mountPath: /java-security
+        {{- include "amplify-fusion.zerotrust.initContainers" . | nindent 8 }}
+      containers:
+        - name: {{ template "inbound-worker.appName" . }}
+          securityContext:
+            {{- toYaml .Values.inboundWorker.securityContext | nindent 12 }}
+          image: "{{ default .Values.image.repository .Values.inboundWorker.image.repository }}/{{ .Values.inboundWorker.image.name }}:{{ .Values.inboundWorker.image.buildTag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.secrets.clusterDetails.name }}
+            {{- if .Values.email.authentication }}
+            - secretRef:
+                name: {{ .Values.email.credentials.name }}
+            {{- end }}
+            {{- if eq .Values.inboundWorker.aws.enabled true }}
+            - secretRef:
+                name: {{ .Values.secrets.inboundWorkerAws.name }}
+            {{- end }}
+
+            {{- if .Values.valkey.enabled }}
+            - secretRef:
+                name: {{ .Values.secrets.datagrid.name }}
+            {{- end }}
+            - configMapRef:
+                name: configmap-common
+            - configMapRef:
+                name: {{ template "inbound-worker.appName" . }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: local_ip
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: server_truststore_password
+              valueFrom:
+                secretKeyRef:
+                  key: password
+                  name: truststore-password
+            - name: server_cert_password
+              valueFrom:
+                secretKeyRef:
+                  key: password
+                  name: certificate-password
+            {{- if .Values.tls.sshCertificate.enabled }}
+            - name: sftp_server_cert_password
+              valueFrom:
+                secretKeyRef:
+                  key: password
+                  name: ssh-certificate-password
+            {{- else }}
+            - name: sftp_server_cert_password
+              valueFrom:
+                secretKeyRef:
+                  key: password
+                  name: certificate-password
+            {{- end }}
+            {{- with include "encryptAtRest.passwordEnv" (dict "cfg" .Values.inboundWorker.encryptAtRest "encryption" .Values.encryption) }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.inboundWorker.env }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - containerPort: 8080
+              name: internal
+            - containerPort: 8181
+              name: management
+            - containerPort: 9080
+              name: openapi
+            - containerPort: 9443
+              name: service
+            - containerPort: 2222
+              name: ssh
+
+          volumeMounts:
+            - name: fusion-java-security
+              mountPath: /etc/fusion-java-security/java.security
+              subPath: java.security
+              readOnly: true
+            - name: {{ .Values.storage.volumeStorageName }}
+              mountPath: /efs
+            - name: tmpdir
+              mountPath: /tmp
+            {{- if .Values.inboundWorker.hostPath.enabled }}
+            - name: payloads-txn-data
+              mountPath: "{{ .Values.inboundWorker.ebs_root }}"
+            - name: txn-log-base-path
+              mountPath: "{{ .Values.inboundWorker.txn_log_base_path }}"
+            {{- end }}
+            - mountPath: "/certificate"
+              name: cert
+            - mountPath: "/certificate/{{ .Values.tls.domainCertificate.name }}"
+              subPath: {{ .Values.tls.domainCertificate.name }}
+              name: domain-certificate
+            {{- if .Values.tls.sshCertificate.enabled }}
+            - mountPath: "/ssh-certificate"
+              name: ssh-domain-certificate
+            {{- end }}
+            {{- with include "encryptAtRest.keystoreVolumeMount" (dict "cfg" .Values.inboundWorker.encryptAtRest "encryption" .Values.encryption) }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- include "amplify-fusion.zerotrust.workloadVolumeMounts" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.inboundWorker.resources | nindent 12 }}
+          livenessProbe: {{- toYaml .Values.inboundWorker.livenessProbe | nindent 12 }}
+          startupProbe: {{- toYaml .Values.inboundWorker.startupProbe | nindent 12 }}
+          readinessProbe: {{- toYaml .Values.inboundWorker.readinessProbe | nindent 12 }}
+      volumes:
+      - name: fusion-java-security-config
+        configMap:
+          name: {{ .Release.Name }}-java-security
+      - name: fusion-java-security
+        emptyDir: {}
+      - name: tmpdir
+        emptyDir: {}
+      {{- if .Values.inboundWorker.hostPath.enabled }}
+      - name: payloads-txn-data
+        hostPath:
+          path: /local/dx-data/data
+          type: DirectoryOrCreate
+      - name: txn-log-base-path
+        hostPath:
+          path: /local/dx-data/logs
+          type: DirectoryOrCreate
+      {{- end }}
+      - name: {{ .Values.storage.volumeStorageName }}
+        persistentVolumeClaim:
+          claimName: {{ .Release.Namespace }}-{{ .Values.storage.claimName }}
+      - name: cert
+        emptyDir: {}
+      - name: domain-certificate
+        secret:
+          secretName: domain-certificate
+          items:
+            - key: {{ .Values.tls.domainCertificate.name }}
+              path: {{ .Values.tls.domainCertificate.name }}
+      {{- if .Values.tls.sshCertificate.enabled }}
+      - name: ssh-domain-certificate
+        secret:
+          secretName: ssh-domain-certificate
+          items:
+            - key: keystore.p12
+              path: keystore.p12
+      {{- end }}
+      {{- with include "encryptAtRest.keystoreVolume" (dict "cfg" .Values.inboundWorker.encryptAtRest "encryption" .Values.encryption) }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      {{- include "amplify-fusion.zerotrust.workloadVolumes" . | nindent 6 }}
+      {{- with .Values.inboundWorker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.inboundWorker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.inboundWorker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -1,0 +1,23 @@
+{{- if eq .Values.common.externalConfigMaps false }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: configmap-common
+  namespace: {{ .Release.Namespace }}
+data:
+  efs_root: "{{ .Values.common.efs_root }}"
+  admin_email: "{{ .Values.common.admin_email}}"
+  dxchange_email_host: "{{ .Values.common.email_host }}"
+  dxchange_email_frommailid: "{{ .Values.common.email_frommailid }}"
+  support_email: "{{ .Values.common.support_email }}"
+  admin_mail_notify_event_status: "{{ .Values.common.admin_mail_notify_event_status }}"
+  min_member_count: "{{ .Values.common.min_member_count }}"
+  log_file_enabled: "{{ .Values.common.logFileEnabled }}"
+  log_json_enabled: "{{ .Values.common.logJsonEnabled }}"
+  {{- if .Values.common.authentication.enabled }}
+  dxchange_email_authentication: "true"
+  dxchange_email_usetls: "true"
+  dxchange_email_port: "{{ .Values.common.authentication.email_port }}"
+  dxchange_email_username: "{{ .Values.common.authentication.email_username }}"
+  {{- end }}
+{{- end }}

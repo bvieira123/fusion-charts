@@ -1,0 +1,20 @@
+{{- if .Values.storage.efs.enabled -}}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Release.Namespace }}-{{ .Values.storage.persistence.volumeName }}
+spec:
+  capacity:
+    # This doesn't matter for efs, but k8s requires this field to exist
+    storage: {{ .Values.storage.persistence.volumeCapacity }}
+  volumeMode: Filesystem
+  accessModes:
+    - {{ .Values.storage.persistence.volumeAccessMode  }}
+  persistentVolumeReclaimPolicy: {{ .Values.storage.persistence.volumeReclaimPolicy }}
+  claimRef:
+    name: {{ .Release.Namespace }}-{{ .Values.storage.claimName }}
+    namespace: {{ .Release.Namespace }}
+  csi:
+    driver: efs.csi.aws.com
+    volumeHandle: {{ .Values.storage.efs.volumeHandle }}
+{{- end -}}

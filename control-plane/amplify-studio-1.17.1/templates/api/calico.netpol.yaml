@@ -1,0 +1,80 @@
+{{- if .Values.api.calicoNetpol.enabled }}
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: {{ template "api.appName" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  order: 10
+  selector: ampint.ctlplane == 'api'
+  types:
+    - Ingress
+    - Egress
+  ingress:
+    # allow: ingress-controller -> pod
+    - action: Allow
+      protocol: TCP
+      source:
+        namespaceSelector: projectcalico.org/name == '{{ .Values.api.calicoNetpol.ingressController.namespace }}'
+        selector: {{ .Values.api.calicoNetpol.ingressController.podSelector }}
+      destination:
+        ports:
+          {{- range .Values.api.service.ports }}
+          - {{ .targetPort }}
+          {{- end }}
+    # allow: all ampint pod in namespace -> pod
+    - action: Allow
+      protocol: TCP
+      source:
+        selector: has(ampint.ctlplane)
+      destination:
+        ports:
+          {{- range .Values.api.service.ports }}
+          - {{ .targetPort }}
+          {{- end }}
+  egress:
+    # allow: pod -> k8s dns (for service name)
+    - action: Allow
+      protocol: UDP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    - action: Allow
+      protocol: TCP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    # allow to communicate with k8s api server
+    - action: Allow
+      destination:
+        services:
+          name: kubernetes
+          namespace: default
+      protocol: TCP
+
+    # allow: pod -> hazelcast
+    - action: Allow
+      protocol: TCP
+      destination:
+        selector: ampint.ctlplane == 'hazelcast'
+        ports:
+          - 5701
+    # allow: pod -> im
+    - action: Allow
+      protocol: TCP
+      destination:
+        selector: ampint.ctlplane == 'im'
+        ports:
+          - 9080
+    ### Traffic to the internet ###
+    ###Postgres
+    - action: Allow
+      protocol: TCP
+      destination: {{ toYaml .Values.api.calicoNetpol.postgresoutboundRule | nindent 8 }}
+    ###outbound
+    - action: Allow
+      protocol: TCP
+      destination: {{ toYaml .Values.api.calicoNetpol.outboundRule | nindent 8 }}
+{{- end }}

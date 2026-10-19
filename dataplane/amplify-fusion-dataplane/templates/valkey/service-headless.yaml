@@ -1,0 +1,37 @@
+{{- if eq (include "valkey.internal.enabled" .) "true" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ template "valkey.appName" . }}-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "valkey.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # Peer-discovery/healing (failover-controller STONITH/TAKEOVER, Valkey's own cluster-bus
+  # gossip) must be able to resolve every pod's hostname by ordinal even while a pod is
+  # not Ready - e.g. the sole surviving replica during an outage, whose own readiness probe
+  # fails on cluster_state:fail until it is promoted. Without this, Kubernetes drops a
+  # not-Ready pod from this headless Service's DNS entirely, which can deadlock recovery:
+  # TAKEOVER can never reach the replica by name to promote it, and the replica can never
+  # become Ready without being promoted.
+  publishNotReadyAddresses: true
+  ports:
+    - name: valkey-client
+      port: 6379
+      targetPort: valkey-client
+      protocol: TCP
+    - name: valkey-cluster
+      port: 16379
+      targetPort: valkey-cluster
+      protocol: TCP
+    {{- if .Values.valkey.internal.metrics.enabled }}
+    - name: metrics
+      port: 8181
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{ include "valkey.selectorLabels" . | nindent 4 }}
+{{- end }}

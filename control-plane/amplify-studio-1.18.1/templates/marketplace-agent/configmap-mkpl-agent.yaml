@@ -1,0 +1,19 @@
+{{- if eq .Values.externalConfigMaps false }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "marketplace-agent.appName" . }}
+  namespace: {{ .Release.Namespace }}
+data:
+  JAVA_OPTS: "{{ .Values.marketplaceAgent.xms_xmx }}"
+  quarkus.datasource.jdbc.url: jdbc:postgresql://{{ .Values.database.endpoint }}/{{ .Values.database.name }}
+  hazelcast.server-ip: {{ template "hazelcast.appName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  apicentral.url: https://apicentral.axway.com
+  apicentral.watchtopic.name: marketplace-agent-{{ .Values.appEnv }}-watchtopic
+  quarkus.rest-client.login-service.url: https://login.axway.com/auth/realms/Broker/protocol/openid-connect
+  quarkus.rest-client.api-service.url: http://{{ .Values.marketplaceAgent.apiService.name }}-{{ .Values.appEnv }}:{{ .Values.marketplaceAgent.apiService.port }}/api
+  tenant_namespace: {{ .Release.Namespace }}
+  metric.reporter.agent.type: {{ .Chart.Name }}
+  metric.reporter.agent.version: {{ .Chart.Version }}
+  domain: {{ .Values.external_domain | quote }}
+{{- end }}

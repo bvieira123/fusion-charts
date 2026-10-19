@@ -1,0 +1,37 @@
+{{- if .Values.orchestrator.connectors.nfs.enabled }}
+{{- range $index, $volume := .Values.orchestrator.connectors.nfs.volumes -}}
+{{- if and $volume.name $volume.server $volume.share $volume.mountOptions }}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: "{{ $.Release.Namespace }}-connector-nfs-pv-{{ $volume.name }}"
+  namespace: {{ $.Release.Namespace }}
+spec:
+  capacity:
+    storage: 10Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  claimRef:
+    name: "ampint-connector-nfs-pvc-{{ $volume.name }}"
+    namespace: {{ $.Release.Namespace }}
+  mountOptions: {{ toYaml $volume.mountOptions | nindent 2 }}
+{{- if eq $.Values.orchestrator.connectors.nfs.mode "csi" }}
+  csi:
+    driver: nfs.csi.k8s.io
+    readOnly: false
+    volumeHandle: "{{ $volume.server }}{{ $volume.share }}{{ $volume.name }}"
+    volumeAttributes:
+      server: {{ $volume.server }}
+      share: {{ $volume.share }}
+{{- else }}
+  nfs:
+    server: {{ $volume.server }}
+    path: {{ $volume.share }}
+{{- end }}
+---
+{{- end }}
+{{- end }}
+{{- end }}

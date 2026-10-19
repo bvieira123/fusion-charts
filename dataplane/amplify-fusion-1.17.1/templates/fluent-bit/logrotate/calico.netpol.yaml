@@ -1,0 +1,33 @@
+{{- if and .Values.fluentBit.enabled .Values.fluentBit.logrotate.calicoNetpol.enabled }}
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: logrotate-network-policy
+  namespace: {{ .Release.Namespace }}
+spec:
+  order: 10
+  selector: dplane == 'logrotate-job'
+  types:
+    - Egress
+  egress:
+    # allow to communicate to DNS pods
+    - action: Allow
+      protocol: UDP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    - action: Allow
+      protocol: TCP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    # allow to communicate with k8s api server
+    - action: Allow
+      destination:
+        services:
+          name:  kubernetes
+          namespace: default
+      protocol: TCP
+{{- end }}

@@ -1,0 +1,60 @@
+{{- if and .Values.fluentBit.enabled (eq .Values.fluentBit.kind "Deployment") -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "fluent-bit.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fluent-bit.labels" . | nindent 4 }}
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Daemon Off
+        Flush 1
+        Log_Level info
+        storage.path ${efs_root}/fluent-bit/storage
+        storage.backlog.flush_on_shutdown On
+        Parsers_File /fluent-bit/etc/parsers.conf
+        HTTP_Server On
+        HTTP_Listen 0.0.0.0
+        HTTP_Port 2020
+        Health_Check On
+
+    {{- with .Values.fluentBit.config.service }}
+    {{ tpl . $ | nindent 4 }}
+    {{- end }}
+
+  {{- $inputs := list
+    (dict "name" "api" "path" "api/*/api.log" "tag" "api.app.log*")
+    (dict "name" "auditservice" "path" "auditservice/*/auditservice.log" "tag" "auditservice.app.log*")
+    (dict "name" "im" "path" "im/*/is.log" "tag" "im.app.log*")
+    (dict "name" "marketplace-agent" "path" "marketplace/*/marketplace.log" "tag" "marketplace.app.log*")
+    (dict "name" "hazelcast" "path" "hazelcast/*/hazelcast.log" "tag" "hazelcast.app.log*")
+  -}}
+  {{- range $inputs }}
+    [INPUT]
+        Name tail
+        Path ${efs_root}/logs/{{ .path }}
+        multiline.parser docker, cri
+        DB ${efs_root}/fluent-bit/storage/{{ .name }}-tail.db
+        DB.locking true
+        Ignore_Older 1d
+        storage.type filesystem
+        read_from_head true
+        Tag {{ .tag }}
+        Skip_Long_Lines On
+  {{- end }}
+
+
+  {{- with .Values.fluentBit.config.inputs }}
+    {{ tpl . $ | nindent 4 }}
+    {{- end }}
+
+    {{- with .Values.fluentBit.config.filters }}
+    {{ tpl . $ | nindent 4 }}
+    {{- end }}
+
+    {{- with .Values.fluentBit.config.outputs }}
+    {{ tpl . $ | nindent 4 }}
+    {{- end }}
+  {{- end }}

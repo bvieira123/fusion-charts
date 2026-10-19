@@ -1,0 +1,25 @@
+{{- if .Values.ui.calicoNetpol.enabled }}
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: {{ template "ui.appName" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  order: 10
+  selector: ampint.ctlplane == 'ui'
+  types:
+    - Ingress
+    - Egress
+  ingress:
+    # allow: ingress-controller -> pod
+    - action: Allow
+      protocol: TCP
+      source:
+        namespaceSelector: projectcalico.org/name == '{{ .Values.ui.calicoNetpol.ingressController.namespace }}'
+        selector: {{ .Values.ui.calicoNetpol.ingressController.podSelector }}
+      destination:
+        ports:
+          {{- range .Values.ui.service.ports }}
+          - {{ .targetPort }}
+          {{- end }}
+{{- end }}

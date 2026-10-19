@@ -1,0 +1,59 @@
+{{- if eq .Values.common.externalConfigMaps false }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "orchestrator.appName" . }}
+  namespace: {{ .Release.Namespace }}
+data:
+  kubernetes_service_name: {{ template "orchestrator.appName" . }}
+  domain: "{{ .Values.global.external_domain }}"
+  jwtExpirationTimeout: "{{ .Values.orchestrator.jwtExpirationTimeout }}"
+  {{- if .Values.zerotrust.enabled }}
+  SPIRE_SOCKET_PATH: "{{ .Values.zerotrust.providers.spire.workload.mountPath }}/spire-agent.sock"
+  spiffe_trusted_domain: {{ include "trustDomain.spiffeId" . | quote }}
+  {{- end }}
+  environment: {{ .Values.global.appEnv }}
+  txn_log_base_path: "{{ .Values.orchestrator.hostPath.enabled | ternary .Values.orchestrator.txn_log_base_path .Values.orchestrator.efs_txn_log_path }}"
+  {{- if .Values.orchestrator.hostPath.enabled }}
+  ebs_root: "{{ .Values.orchestrator.ebs_root }}"
+  {{- end }}
+  JAVA_OPTS: "{{ .Values.orchestrator.javaOpts }} -Djava.library.path=/shared-libraries/luna-hsm-client-10.9.1"
+  ChrystokiConfigurationPath: "/tmp/lunaHsmClient"
+  orchestrator_service: "{{ .Chart.Name }}-{{ .Values.global.appEnv }}"
+  max_executions_limit: "{{ .Values.orchestrator.max_executions_limit }}"
+  critical_memory_buffer: "{{ .Values.orchestrator.critical_memory_buffer }}"
+  enable_legacy_tls: "{{ .Values.orchestrator.enable_legacy_tls }}"
+  k8_namespace: {{ .Release.Namespace }}
+  stale_process_interval: "{{ .Values.orchestrator.stale_process_interval }}"
+  QUARKUS_LOG_CONSOLE_LEVEL: "{{ .Values.orchestrator.QUARKUS_LOG_CONSOLE_LEVEL }}"
+  TERMINATION_GRACE_PERIOD_SECS: "{{ .Values.orchestrator.terminationGracePeriodSeconds }}"
+  QUARKUS_SHUTDOWN_DELAY: "{{  .Values.orchestrator.preStopSleepSeconds }}"
+  {{- range .Values.orchestrator.service.ports }}
+  {{- if eq .name "grpc-port" }}
+  QUARKUS_GRPC_PORT: {{ .port | quote }}
+  {{- end }}
+{{- end }}
+  max_payload_size_kbs: "{{ .Values.orchestrator.max_payload_size_kbs }}"
+  websocket_server_enabled: "{{ .Values.orchestrator.websocket_server.enabled }}"
+  heartbeat_time_interval_sec: "{{ .Values.orchestrator.heartbeat_time_interval_sec}}"
+  heartbeat_timeout_sec: "{{ .Values.orchestrator.heartbeat_timeout_sec }}"
+  {{- if eq .Values.orchestrator.aws.enabled true }}
+  Access_Key: {{ .Values.orchestrator.aws.Access_Key }}
+  Secret_Key: {{ .Values.orchestrator.aws.Secret_Key }}
+  region: {{ .Values.orchestrator.aws.Region }}
+  {{- end }}
+  {{- include "encryptAtRest.configmap" (dict "cfg" .Values.orchestrator.encryptAtRest "global" .Values.global "awsCfg" .Values.orchestrator.aws "component" "orchestrator") | nindent 2 }}
+  {{- if .Values.orchestrator.cidr_range }}
+  cidr_range: "{{ .Values.orchestrator.cidr_range }}"
+  {{- end }}
+  {{- if .Values.orchestrator.enable_legacy_tls }}
+  LEGACY_OPTS: " -Djava.security.properties=/app/java.security.with-TLSv1TLSv1.1 "
+  {{- else }}
+  LEGACY_OPTS : ""
+  {{- end }}
+  {{- if .Values.orchestrator.sap_enabled }}
+  CLASSPATH: "{{ .Values.orchestrator.sap_lib_directory }}/*:/app/orchestrator.jar"
+  {{- else }}
+  CLASSPATH: "/app/orchestrator.jar"
+  {{- end }}
+{{- end }}

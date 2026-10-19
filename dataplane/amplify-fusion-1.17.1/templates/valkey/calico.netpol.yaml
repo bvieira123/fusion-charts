@@ -1,0 +1,47 @@
+{{- if and (eq (include "valkey.internal.enabled" .) "true") .Values.valkey.internal.calicoNetpol.enabled }}
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: {{ template "valkey.appName" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  order: 10
+  selector: dplane == 'valkey'
+  types:
+    - Ingress
+    - Egress
+  ingress:
+    ### traffic from inbound-worker, orchestrator, valkey, sink agent, pep server and migrator job ###
+    - action: Allow
+      protocol: TCP
+      source:
+        selector: dplane == 'orchestrator' || dplane == 'inbound-worker' || dplane == 'valkey' ||  dplane == 'sink-agent' || dplane == 'pep-server' || dplane == 'migrator-job'
+        namespaceSelector: projectcalico.org/name == '{{ .Release.Namespace }}'
+      destination:
+        ports:
+          - 6379
+          - 16379
+  egress:
+    # allow to communicate to DNS pods
+    - action: Allow
+      protocol: UDP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    - action: Allow
+      protocol: TCP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    # allow to communicate with itself for clustering
+    - action: Allow
+      protocol: TCP
+      destination:
+        selector: dplane == 'valkey'
+        namespaceSelector: projectcalico.org/name == '{{ .Release.Namespace }}'
+        ports:
+          - 6379
+          - 16379
+{{- end }}

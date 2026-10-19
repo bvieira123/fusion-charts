@@ -1,0 +1,32 @@
+{{- if .Values.envoy.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ template "envoy.appName" . }}
+  labels:
+    {{- include "envoy.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "envoy.appName" . }}
+  minReplicas: {{ .Values.envoy.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.envoy.autoscaling.maxReplicas }}
+  metrics:
+    {{- if .Values.envoy.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.envoy.autoscaling.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.envoy.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.envoy.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- end }}
+{{- end }}

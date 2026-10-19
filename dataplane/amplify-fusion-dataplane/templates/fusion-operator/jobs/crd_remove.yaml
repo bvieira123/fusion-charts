@@ -1,0 +1,38 @@
+{{- if and .Values.fusionOperator.enabled (eq  (include "parent.dataplaneMode" . ) "shared") }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: remove-crd
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+  labels:
+    dplane: "crd-job"
+spec:
+  ttlSecondsAfterFinished: {{ .Values.fusionOperator.job.removeJob_ttl }}
+  template:
+    metadata:
+      labels:
+        dplane: "crd-job"
+    spec:
+      {{- with .Values.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.fusionOperator.job.serviceAccount.enabled }}
+      serviceAccountName: {{ include "fusionOperator.job.serviceAccountName" . }}
+      {{- end }}
+      {{- if .Values.fusionOperator.podSecurityContextEnabled }}
+      securityContext: {{- toYaml .Values.fusionOperator.podSecurityContext | nindent 8 }}
+      {{- end }}
+      restartPolicy: OnFailure
+      containers:
+        - name: delete-crd
+          securityContext: {{- toYaml .Values.fusionOperator.securityContext | nindent 12 }}
+          image: "{{ default .Values.image.repository .Values.image.alpinetools.image.repository }}/{{ .Values.image.alpinetools.image.name }}:{{ .Values.image.alpinetools.image.tag }}"
+          command:
+            - /bin/sh
+            - -c
+            - |
+              kubectl delete crd orchestrators.operator.fusion.axway.com --ignore-not-found=true
+{{- end }}

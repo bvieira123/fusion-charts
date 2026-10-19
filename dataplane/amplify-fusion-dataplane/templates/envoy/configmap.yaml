@@ -1,0 +1,999 @@
+{{- if eq .Values.externalConfigMaps false }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "envoy.appName" . }}
+  labels:
+{{ include "envoy.labels" . | indent 4 }}
+data:
+  {{- range $key, $value := .Values.envoy.files }}
+  {{ $key }}: |-
+  {{ $value | default "" | indent 4 }}
+  {{- end -}}
+  {{- if (index .Values.envoy.templates "envoy.yaml") }}
+  envoy.yaml: |-
+    {{ $valueWithDefault := default "" (index .Values.envoy.templates "envoy.yaml") -}}
+  {{ tpl $valueWithDefault $ | indent 4 }}
+  {{- else }}
+  envoy.yaml: |-
+    node:
+      cluster: ampint-gw
+      id: ampint-gw
+
+    admin:
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: {{ .Values.envoy.adminPorts.admin.containerPort }}
+
+    dynamic_resources:
+      ads_config:
+        api_type: GRPC
+        transport_api_version: V3
+        grpc_services:
+          - envoy_grpc:
+              cluster_name: xds_cluster
+      cds_config:
+        ads: {}
+        resource_api_version: V3
+      lds_config:
+        ads: {}
+        resource_api_version: V3
+
+    static_resources:
+      listeners:
+      - name: internal
+        address:
+          socket_address:
+            address: 0.0.0.0
+            port_value: 9902
+        filter_chains:
+          - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: internal
+                codec_type: AUTO
+                stream_idle_timeout: 15s
+                use_remote_address: true
+                xff_num_trusted_hops: 0
+                common_http_protocol_options:
+                  idle_timeout: 15s
+                route_config:
+                  name: internal
+                  validate_clusters: false
+                  virtual_hosts:
+                  - name: internal
+                    domains:
+                    - "*"
+                    routes:
+                    - match:
+                        path: "/started"
+                      route:
+                        cluster: blackhole
+                http_filters:
+                  - name: envoy.filters.http.lua
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+                      inline_code: |
+                        function envoy_on_request(request_handle)
+                          local notReady = false
+                        {{ if or (not .Values.multihost.enabled) (and .Values.multihost.enabled .Values.multihost.listeners.tls.api.enabled) }}
+                          local headers, body = request_handle:httpCall(
+                          "service_admin",
+                          {
+                            [":method"] = "GET",
+                            [":path"] = "/stats?filter=http.apim.rds.ampint-api.update_success&format=text",
+                            [":authority"] = "internal"
+                          },
+                          "", 2000, false)
+
+                          local count = body and string.gsub(body, "^%s*.+:%s*(.-)%s*$", "%1") or nil
+                          notReady = notReady or (count == nil or count == "0")
+                        {{ end }}
+                        {{ if or (not .Values.multihost.enabled) (and .Values.multihost.enabled .Values.multihost.listeners.tls.api_mtls.enabled) }}
+                          local headersMtls, bodyMtls = request_handle:httpCall(
+                            "service_admin",
+                            {
+                              [":method"] = "GET",
+                              [":path"] = "/stats?filter=http.apim.rds.ampint-api-mtls.update_success&format=text",
+                              [":authority"] = "internal"
+                            },
+                            "", 2000, false)
+
+                          local countMtls = bodyMtls and string.match(bodyMtls, ":[%s]*(%d+)") or nil
+                          notReady = notReady or (countMtls == nil or countMtls == "0")
+                        {{ end }}
+                          if notReady then
+                            request_handle:logInfo("Waiting for first XDS snapshot.")
+                            request_handle:respond(
+                              {[":status"] = "503"},
+                              "Waiting for first XDS snapshot.")
+                          else
+                            request_handle:logInfo("XDS snapshot received, Envoy is ready.")
+                            request_handle:respond(
+                                {[":status"] = "200"},
+                                "Ready")
+                          end
+                        end
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+      - name: drain_listener
+        address:
+          socket_address:
+            address: 0.0.0.0
+            port_value: 9903
+        filter_chains:
+          - filters:
+              - name: envoy.filters.network.http_connection_manager
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                  stat_prefix: drain_http
+                  stream_idle_timeout: "{{ .Values.envoy.maxDrainDurationSeconds }}"
+                  route_config:
+                    name: drain_route
+                    virtual_hosts:
+                      - name: drain_service
+                        domains: ["*"]
+                        routes:
+                          - match: { prefix: "/drain" }
+                            direct_response:
+                              status: 200
+                              body: { inline_string: "Drain endpoint hit. Check logs if process didn't start." }
+                  http_filters:
+                    - name: envoy.filters.http.dynamic_modules
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_modules.v3.DynamicModuleFilter
+                        dynamic_module_config:
+                          name: fusion_dynamic_module
+                        filter_name: graceful_drain
+                        filter_config:
+                          "@type": type.googleapis.com/google.protobuf.StringValue
+                          value: |
+                            {
+                              "readiness_wait": "{{ .Values.envoy.preStopSleepSeconds }}",
+                              "admin_cluster": "service_admin",
+                              "max_drain_time": "{{ .Values.envoy.maxDrainDurationSeconds }}",
+                              "poll_interval": "{{ .Values.envoy.gracefulShutdownPollIntervalSeconds }}",
+                              "excluded_ports": ["9901", "9902", "9903"]
+                            }
+                    - name: envoy.filters.http.router
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+      {{ if .Values.multihost.enabled }}
+      {{ if .Values.multihost.listeners.tcp.http.enabled  }}
+      - name: multiHostHttp
+        address:
+          socket_address:
+            address: 0.0.0.0
+            port_value: 9080
+        listener_filters:
+        - name: envoy.filters.listener.proxy_protocol
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.listener.proxy_protocol.v3.ProxyProtocol
+            "allow_requests_without_proxy_protocol": true
+        filter_chains:
+        - filter_chain_match:
+            server_names:
+            - "{{ .Values.multihost.listeners.tcp.http.hostPrefix }}.{{ .Values.external_domain }}"
+        - filters:
+          - name: envoy.filters.network.connection_limit
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.connection_limit.v3.ConnectionLimit
+              stat_prefix: traffic_max_connections
+              max_connections: 30000
+              delay: 10s
+          - name: envoy.filters.network.tcp_proxy
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+              stat_prefix: http
+              cluster: inbound-worker-http
+              max_connect_attempts: 3
+              idle_timeout: {{ .Values.envoy.timeouts.idleTimeout }}
+      {{- end }}
+
+      {{ if .Values.multihost.listeners.ssh.sftp.enabled  }}
+      - name: multiHostSftp
+        address:
+          socket_address:
+            address: 0.0.0.0
+            port_value: 2222
+        listener_filters:
+        - name: envoy.filters.listener.proxy_protocol
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.listener.proxy_protocol.v3.ProxyProtocol
+            "allow_requests_without_proxy_protocol": true
+        - name: "envoy.filters.listener.tls_inspector"
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector
+        filter_chains:
+        - filter_chain_match:
+            server_names:
+            - "{{ .Values.multihost.listeners.ssh.sftp.hostPrefix }}.{{ .Values.external_domain }}"
+        - filters:
+          - name: envoy.filters.network.connection_limit
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.connection_limit.v3.ConnectionLimit
+              stat_prefix: ssh_max_connections
+              max_connections: 30000
+              delay: 10s
+          - name: envoy.filters.network.tcp_proxy
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+              stat_prefix: ssh
+              cluster: inbound-worker-ssh
+              max_connect_attempts: 3
+              idle_timeout: {{ .Values.envoy.timeouts.idleTimeout }}
+      {{- end }}
+
+      {{ else }}
+      - name: https-1
+        address:
+          socket_address:
+            address: 0.0.0.0
+            port_value: 9443
+        listener_filters:
+        - name: envoy.filters.listener.proxy_protocol
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.listener.proxy_protocol.v3.ProxyProtocol
+            "allow_requests_without_proxy_protocol": true
+        - name: "envoy.filters.listener.tls_inspector"
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector
+        filter_chains:
+        - filter_chain_match:
+            server_names:
+            {{- if eq  (include "parent.dataplaneMode" . ) "shared" }}
+            - "*.{{ .Values.external_domain }}"
+            {{- else }}
+            - "{{ .Values.external_domain }}"
+            {{- end }}
+          filters:
+            - name: envoy.filters.network.connection_limit
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.connection_limit.v3.ConnectionLimit
+                stat_prefix: traffic_max_connections
+                max_connections: 30000
+                delay: 10s
+            - name: envoy.filters.network.tcp_proxy
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+                stat_prefix: https
+                cluster: inbound-worker-https
+                max_connect_attempts: 3
+                idle_timeout: {{ .Values.envoy.timeouts.idleTimeout }}
+
+      - name: http
+        address:
+          socket_address:
+            address: 0.0.0.0
+            port_value: 9080
+        listener_filters:
+        - name: envoy.filters.listener.proxy_protocol
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.listener.proxy_protocol.v3.ProxyProtocol
+            "allow_requests_without_proxy_protocol": true
+        filter_chains:
+        - filters:
+            - name: envoy.filters.network.connection_limit
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.connection_limit.v3.ConnectionLimit
+                stat_prefix: traffic_max_connections
+                max_connections: 30000
+                delay: 10s
+            - name: envoy.filters.network.tcp_proxy
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+                stat_prefix: http
+                cluster: inbound-worker-http
+                max_connect_attempts: 3
+                idle_timeout: {{ .Values.envoy.timeouts.idleTimeout }}
+      - name: ssh
+        address:
+          socket_address:
+            address: 0.0.0.0
+            port_value: 2222
+        listener_filters:
+        - name: envoy.filters.listener.proxy_protocol
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.listener.proxy_protocol.v3.ProxyProtocol
+            "allow_requests_without_proxy_protocol": true
+        - name: "envoy.filters.listener.tls_inspector"
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector
+        filter_chains:
+          filters:
+            - name: envoy.filters.network.connection_limit
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.connection_limit.v3.ConnectionLimit
+                stat_prefix: ssh_max_connections
+                max_connections: 30000
+                delay: 10s
+            - name: envoy.filters.network.tcp_proxy
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+                stat_prefix: ssh
+                cluster: inbound-worker-ssh
+                max_connect_attempts: 3
+                idle_timeout: {{ .Values.envoy.timeouts.idleTimeout }}
+      {{- end }}
+
+      clusters:
+      - name: service_admin
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: ROUND_ROBIN
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              http2_protocol_options:
+                # Configure an HTTP/2 keep-alive to detect connection issues and reconnect
+                # to the admin server if the connection is no longer responsive.
+                connection_keepalive:
+                  interval: 30s
+                  timeout: 5s
+        load_assignment:
+          cluster_name: service_admin
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: 127.0.0.1
+                    port_value: 9901
+      - name: xds_cluster
+        connect_timeout: 0.25s
+        type: STRICT_DNS
+        lb_policy: ROUND_ROBIN
+        {{- if eq .Values.zerotrust.enabled true }}
+        transport_socket:
+          name: envoy.transport_sockets.tls
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            common_tls_context:
+              tls_certificate_sds_secret_configs:
+               - name: "{{ include "envoy.spiffeId" . }}"
+                 sds_config:
+                   api_config_source:
+                     api_type: GRPC
+                     grpc_services:
+                       - envoy_grpc:
+                           cluster_name: sds_spire
+              combined_validation_context:
+                # validate the SPIFFE ID of incoming clients (optionally)
+                default_validation_context:
+                  match_typed_subject_alt_names:
+                  - san_type: URI
+                    matcher:
+                      exact: "{{ include "pep-server.spiffeId" . }}"
+                validation_context_sds_secret_config:
+                  name: "{{ include "trustDomain.spiffeId" . }}"
+                  sds_config:
+                    api_config_source:
+                      api_type: GRPC
+                      grpc_services:
+                        - envoy_grpc:
+                            cluster_name: sds_spire
+        {{- end }}
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              http2_protocol_options:
+                connection_keepalive:
+                  interval: 30s
+                  timeout: 5s
+        load_assignment:
+          cluster_name: xds_cluster
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: pep-server-{{ .Values.appEnv }}-headless
+                    port_value: 9090
+        #Note the health checks needs only to be applied to one of the pep_clusters
+        health_checks:
+          - timeout: 2s
+            interval: 3s
+            unhealthy_threshold: 2
+            healthy_threshold: 2
+            grpc_health_check:
+              service_name: ""
+            {{- if eq .Values.zerotrust.enabled true }}
+              authority: pep-server-{{ .Values.appEnv }}-headless
+            {{- end }}
+            no_traffic_healthy_interval: 5s
+            {{- if eq .Values.zerotrust.enabled true }}
+            transport_socket_match_criteria:
+              envoy.transport_sockets.tls: true
+            tls_options:
+              alpn_protocols:
+              - h2
+            {{- end }}
+
+      - name: otel_cluster
+        connect_timeout: 1s
+        type: STRICT_DNS
+        lb_policy: ROUND_ROBIN
+        {{- if eq .Values.zerotrust.enabled true }}
+        transport_socket:
+          name: envoy.transport_sockets.tls
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            common_tls_context:
+              tls_certificate_sds_secret_configs:
+               - name: "{{ include "envoy.spiffeId" . }}"
+                 sds_config:
+                   api_config_source:
+                     api_type: GRPC
+                     grpc_services:
+                       - envoy_grpc:
+                           cluster_name: sds_spire
+              combined_validation_context:
+                # validate the SPIFFE ID of incoming clients (optionally)
+                default_validation_context:
+                  match_typed_subject_alt_names:
+                  - san_type: URI
+                    matcher:
+                      exact: "{{ include "pep-server.spiffeId" . }}"
+                validation_context_sds_secret_config:
+                  name: "{{ include "trustDomain.spiffeId" . }}"
+                  sds_config:
+                    api_config_source:
+                      api_type: GRPC
+                      grpc_services:
+                        - envoy_grpc:
+                            cluster_name: sds_spire
+        {{- end }}
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              http2_protocol_options:
+                connection_keepalive:
+                  interval: 30s
+                  timeout: 5s
+        load_assignment:
+          cluster_name: otel_cluster
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: pep-server-{{ .Values.appEnv }}-headless
+                    port_value: 9090
+      {{- if eq .Values.zerotrust.enabled true }}
+      - name: sds_spire
+        type: STATIC
+        connect_timeout: 1s
+        lb_policy: ROUND_ROBIN
+        http2_protocol_options: {}
+        load_assignment:
+          cluster_name: sds_spire
+          endpoints:
+            - lb_endpoints:
+              - endpoint:
+                  address:
+                    pipe:
+                      path: {{ .Values.zerotrust.providers.spire.workload.mountPath }}/spire-agent.sock
+       {{- end }}
+      - name: als_cluster
+        connect_timeout: 1s
+        type: STRICT_DNS
+        lb_policy: ROUND_ROBIN
+        {{- if eq .Values.zerotrust.enabled true }}
+        transport_socket:
+          name: envoy.transport_sockets.tls
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            common_tls_context:
+              tls_certificate_sds_secret_configs:
+               - name: "{{ include "envoy.spiffeId" . }}"
+                 sds_config:
+                   api_config_source:
+                     api_type: GRPC
+                     grpc_services:
+                       - envoy_grpc:
+                           cluster_name: sds_spire
+              combined_validation_context:
+                # validate the SPIFFE ID of incoming clients (optionally)
+                default_validation_context:
+                  match_typed_subject_alt_names:
+                  - san_type: URI
+                    matcher:
+                      exact: "{{ include "pep-server.spiffeId" . }}"
+                validation_context_sds_secret_config:
+                  name: "{{ include "trustDomain.spiffeId" . }}"
+                  sds_config:
+                    api_config_source:
+                      api_type: GRPC
+                      grpc_services:
+                        - envoy_grpc:
+                            cluster_name: sds_spire
+        {{- end }}
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              http2_protocol_options:
+                connection_keepalive:
+                  interval: 30s
+                  timeout: 5s
+        load_assignment:
+          cluster_name: als_cluster
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: pep-server-{{ .Values.appEnv }}-headless
+                    port_value: 9090
+      - name: ext_authz_cluster
+        connect_timeout: 1s
+        type: STRICT_DNS
+        lb_policy: ROUND_ROBIN
+        {{- if eq .Values.zerotrust.enabled true }}
+        transport_socket:
+          name: envoy.transport_sockets.tls
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            common_tls_context:
+              tls_certificate_sds_secret_configs:
+               - name: "{{ include "envoy.spiffeId" . }}"
+                 sds_config:
+                   api_config_source:
+                     api_type: GRPC
+                     grpc_services:
+                       - envoy_grpc:
+                           cluster_name: sds_spire
+              combined_validation_context:
+                # validate the SPIFFE ID of incoming clients (optionally)
+                default_validation_context:
+                  match_typed_subject_alt_names:
+                  - san_type: URI
+                    matcher:
+                      exact: "{{ include "pep-server.spiffeId" . }}"
+                validation_context_sds_secret_config:
+                  name: "{{ include "trustDomain.spiffeId" . }}"
+                  sds_config:
+                    api_config_source:
+                      api_type: GRPC
+                      grpc_services:
+                        - envoy_grpc:
+                            cluster_name: sds_spire
+        {{- end }}
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              http2_protocol_options:
+                connection_keepalive:
+                  interval: 30s
+                  timeout: 5s
+        load_assignment:
+          cluster_name: ext_authz_cluster
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: pep-server-{{ .Values.appEnv }}-headless
+                    port_value: 9090
+      - name: ext_proc_start_audit_cluster
+        connect_timeout: 0.25s
+        type: LOGICAL_DNS
+        lb_policy: ROUND_ROBIN
+        {{- if eq .Values.zerotrust.enabled true }}
+        transport_socket:
+          name: envoy.transport_sockets.tls
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            common_tls_context:
+              tls_certificate_sds_secret_configs:
+               - name: "{{ include "envoy.spiffeId" . }}"
+                 sds_config:
+                   api_config_source:
+                     api_type: GRPC
+                     grpc_services:
+                       - envoy_grpc:
+                           cluster_name: sds_spire
+              combined_validation_context:
+                # validate the SPIFFE ID of incoming clients (optionally)
+                default_validation_context:
+                  match_typed_subject_alt_names:
+                  - san_type: URI
+                    matcher:
+                      exact: "{{ include "pep-server.spiffeId" . }}"
+                validation_context_sds_secret_config:
+                  name: "{{ include "trustDomain.spiffeId" . }}"
+                  sds_config:
+                    api_config_source:
+                      api_type: GRPC
+                      grpc_services:
+                        - envoy_grpc:
+                            cluster_name: sds_spire
+        {{- end }}
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              http2_protocol_options:
+                connection_keepalive:
+                  interval: 30s
+                  timeout: 5s
+        load_assignment:
+          cluster_name: ext_proc_start_audit_cluster
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: pep-server-{{ .Values.appEnv }}-headless
+                    port_value: 9090
+      {{- if ne  (include "parent.dataplaneMode" . ) "shared" }}
+      - name: orchestrator_cluster
+        connect_timeout: {{ .Values.envoy.timeouts.connectTimeout }}
+        type: STRICT_DNS
+        lb_policy: ROUND_ROBIN
+        {{- if eq .Values.zerotrust.enabled true }}
+        transport_socket:
+          name: envoy.transport_sockets.tls
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            common_tls_context:
+              tls_certificate_sds_secret_configs:
+               - name: "{{ include "envoy.spiffeId" . }}"
+                 sds_config:
+                   api_config_source:
+                     api_type: GRPC
+                     grpc_services:
+                       - envoy_grpc:
+                           cluster_name: sds_spire
+              combined_validation_context:
+                # validate the SPIFFE ID of incoming clients (optionally)
+                default_validation_context:
+                  match_typed_subject_alt_names:
+                  - san_type: URI
+                    matcher:
+                      exact: "{{ include "orchestrator.spiffeId" . }}"
+                validation_context_sds_secret_config:
+                  name: "{{ include "trustDomain.spiffeId" . }}"
+                  sds_config:
+                    api_config_source:
+                      api_type: GRPC
+                      grpc_services:
+                        - envoy_grpc:
+                            cluster_name: sds_spire
+        {{- end }}
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              http2_protocol_options:
+                connection_keepalive:
+                  interval: 30s
+                  timeout: 5s
+        load_assignment:
+          cluster_name: orchestrator_cluster
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: orchestrator-{{ .Values.appEnv }}
+                    port_value: 50051
+
+        health_checks:
+          - timeout: 3s
+            interval: 3s
+            unhealthy_threshold: 1
+            healthy_threshold: 2
+            grpc_health_check:
+              service_name: ""
+        {{- if eq .Values.zerotrust.enabled true }}
+              authority: orchestrator-{{ .Values.appEnv }}
+        {{- end }}
+            no_traffic_healthy_interval: 30s
+        {{- if eq .Values.zerotrust.enabled true }}
+            transport_socket_match_criteria:
+              envoy.transport_sockets.tls: true
+            tls_options:
+              alpn_protocols:
+              - h2
+        {{- end }}
+
+      - name: orchestrator_cluster-sse
+        connect_timeout: {{ .Values.envoy.timeouts.connectTimeout }}
+        type: STRICT_DNS
+        lb_policy: ROUND_ROBIN
+        {{- if eq .Values.zerotrust.enabled true }}
+        transport_socket:
+          name: envoy.transport_sockets.tls
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            common_tls_context:
+              tls_certificate_sds_secret_configs:
+               - name: "{{ include "envoy.spiffeId" . }}"
+                 sds_config:
+                   api_config_source:
+                     api_type: GRPC
+                     grpc_services:
+                       - envoy_grpc:
+                           cluster_name: sds_spire
+              combined_validation_context:
+                default_validation_context:
+                  match_typed_subject_alt_names:
+                  - san_type: URI
+                    matcher:
+                      exact: "{{ include "orchestrator.spiffeId" . }}"
+                validation_context_sds_secret_config:
+                  name: "{{ include "trustDomain.spiffeId" . }}"
+                  sds_config:
+                    api_config_source:
+                      api_type: GRPC
+                      grpc_services:
+                        - envoy_grpc:
+                            cluster_name: sds_spire
+        {{- end }}
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              http_protocol_options: {}
+        load_assignment:
+          cluster_name: orchestrator_cluster-sse
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: orchestrator-{{ .Values.appEnv }}
+                    port_value: 50052
+
+      - name: orchestrator_cluster-ws
+        connect_timeout: {{ .Values.envoy.timeouts.connectTimeout }}
+        type: STRICT_DNS
+        lb_policy: ROUND_ROBIN
+        {{- if eq .Values.zerotrust.enabled true }}
+        transport_socket:
+          name: envoy.transport_sockets.tls
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            common_tls_context:
+              tls_certificate_sds_secret_configs:
+               - name: "{{ include "envoy.spiffeId" . }}"
+                 sds_config:
+                   api_config_source:
+                     api_type: GRPC
+                     grpc_services:
+                       - envoy_grpc:
+                           cluster_name: sds_spire
+              combined_validation_context:
+                default_validation_context:
+                  match_typed_subject_alt_names:
+                  - san_type: URI
+                    matcher:
+                      exact: "{{ include "orchestrator.spiffeId" . }}"
+                validation_context_sds_secret_config:
+                  name: "{{ include "trustDomain.spiffeId" . }}"
+                  sds_config:
+                    api_config_source:
+                      api_type: GRPC
+                      grpc_services:
+                        - envoy_grpc:
+                            cluster_name: sds_spire
+        {{- end }}
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              http_protocol_options: {}
+        load_assignment:
+          cluster_name: orchestrator_cluster-ws
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: orchestrator-{{ .Values.appEnv }}
+                    port_value: {{ .Values.orchestrator.websocket_server.orchestrator_port | default 1919 }}
+      {{- end }}
+      - name: inbound-worker-sse
+        connect_timeout: {{ .Values.envoy.timeouts.connectTimeout }}
+        http_protocol_options:
+          allow_chunked_length: true
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.tcp.v3.TcpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.tcp.v3.TcpProtocolOptions
+            idle_timeout: {{ .Values.envoy.timeouts.idleTimeout }}
+        {{- if eq .Values.zerotrust.enabled true }}
+        transport_socket:
+          name: envoy.transport_sockets.tls
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            common_tls_context:
+              tls_certificate_sds_secret_configs:
+               - name: "{{ include "envoy.spiffeId" . }}"
+                 sds_config:
+                   api_config_source:
+                     api_type: GRPC
+                     grpc_services:
+                       - envoy_grpc:
+                           cluster_name: sds_spire
+              combined_validation_context:
+                default_validation_context:
+                  match_typed_subject_alt_names:
+                  - san_type: URI
+                    matcher:
+                      exact: "{{ include "inbound-worker.spiffeId" . }}"
+                validation_context_sds_secret_config:
+                  name: "{{ include "trustDomain.spiffeId" . }}"
+                  sds_config:
+                    api_config_source:
+                      api_type: GRPC
+                      grpc_services:
+                        - envoy_grpc:
+                            cluster_name: sds_spire
+        {{- end }}
+        type: LOGICAL_DNS
+        load_assignment:
+          cluster_name: inbound-worker-sse
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: inbound-worker-{{ .Values.appEnv }}
+                    port_value: 7080
+        health_checks:
+          - timeout: 1s
+            interval: 20s
+            unhealthy_threshold: 3
+            healthy_threshold: 3
+            tcp_health_check: {}
+        {{- if eq .Values.zerotrust.enabled true }}
+            transport_socket_match_criteria:
+              envoy.transport_sockets.tls: true
+        {{- end }}
+
+      - name: inbound-worker-http
+        connect_timeout: {{ .Values.envoy.timeouts.connectTimeout }}
+        http_protocol_options:
+          allow_chunked_length: true
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.tcp.v3.TcpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.tcp.v3.TcpProtocolOptions
+            idle_timeout: {{ .Values.envoy.timeouts.idleTimeout }}
+        {{- if eq .Values.zerotrust.enabled true }}
+        transport_socket:
+          name: envoy.transport_sockets.tls
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            common_tls_context:
+              tls_certificate_sds_secret_configs:
+               - name: "{{ include "envoy.spiffeId" . }}"
+                 sds_config:
+                   api_config_source:
+                     api_type: GRPC
+                     grpc_services:
+                       - envoy_grpc:
+                           cluster_name: sds_spire
+              combined_validation_context:
+                default_validation_context:
+                  match_typed_subject_alt_names:
+                  - san_type: URI
+                    matcher:
+                      exact: "{{ include "inbound-worker.spiffeId" . }}"
+                validation_context_sds_secret_config:
+                  name: "{{ include "trustDomain.spiffeId" . }}"
+                  sds_config:
+                    api_config_source:
+                      api_type: GRPC
+                      grpc_services:
+                        - envoy_grpc:
+                            cluster_name: sds_spire
+        {{- end }}
+        type: LOGICAL_DNS
+        load_assignment:
+          cluster_name: inbound-worker-http
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: inbound-worker-{{ .Values.appEnv }}
+                    port_value: 9080
+        health_checks:
+          - timeout: 1s
+            interval: 20s
+            unhealthy_threshold: 3
+            healthy_threshold: 3
+            tcp_health_check: {}
+        {{- if eq .Values.zerotrust.enabled true }}
+            transport_socket_match_criteria:
+              envoy.transport_sockets.tls: true
+        {{- end }}
+      - name: inbound-worker-https
+        connect_timeout: {{ .Values.envoy.timeouts.connectTimeout }}
+        http_protocol_options:
+          allow_chunked_length: true
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.tcp.v3.TcpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.tcp.v3.TcpProtocolOptions
+            idle_timeout: {{ .Values.envoy.timeouts.idleTimeout }}
+        type: LOGICAL_DNS
+        load_assignment:
+          cluster_name: inbound-worker-https
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: inbound-worker-{{ .Values.appEnv }}
+                    port_value: 9443
+        health_checks:
+          - timeout: 1s
+            interval: 20s
+            unhealthy_threshold: 3
+            healthy_threshold: 3
+            tcp_health_check: {}
+      - name: inbound-worker-ssh
+        connect_timeout: {{ .Values.envoy.timeouts.connectTimeout }}
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.tcp.v3.TcpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.tcp.v3.TcpProtocolOptions
+            idle_timeout: {{ .Values.envoy.timeouts.idleTimeout }}
+        {{- if eq .Values.zerotrust.enabled true }}
+        transport_socket:
+          name: envoy.transport_sockets.tls
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            common_tls_context:
+              tls_certificate_sds_secret_configs:
+               - name: "{{ include "envoy.spiffeId" . }}"
+                 sds_config:
+                   api_config_source:
+                     api_type: GRPC
+                     grpc_services:
+                       - envoy_grpc:
+                           cluster_name: sds_spire
+              combined_validation_context:
+                default_validation_context:
+                  match_typed_subject_alt_names:
+                  - san_type: URI
+                    matcher:
+                      exact: "{{ include "inbound-worker.spiffeId" . }}"
+                validation_context_sds_secret_config:
+                  name: "{{ include "trustDomain.spiffeId" . }}"
+                  sds_config:
+                    api_config_source:
+                      api_type: GRPC
+                      grpc_services:
+                        - envoy_grpc:
+                            cluster_name: sds_spire
+        {{- end }}
+        type: LOGICAL_DNS
+        load_assignment:
+          cluster_name: inbound-worker-ssh
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: inbound-worker-{{ .Values.appEnv }}
+                    port_value: 2222
+        health_checks:
+          - timeout: 1s
+            interval: 20s
+            unhealthy_threshold: 3
+            healthy_threshold: 3
+            tcp_health_check: {}
+        {{- if eq .Values.zerotrust.enabled true }}
+            transport_socket_match_criteria:
+              envoy.transport_sockets.tls: true
+        {{- end }}
+  {{- end }}
+{{- end }}

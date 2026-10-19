@@ -1,0 +1,64 @@
+{{- if and .Values.tls.sshCertificate.enabled (not .Values.tls.sshCertificate.manuallyCreated) -}}
+{{- if .Values.tls.sshCertificate.rotationPeriod -}}
+{{- if gt (atoi (trimSuffix "h" .Values.tls.sshCertificate.rotationPeriod)) 8760 -}}
+{{- fail "tls.sshCertificate.rotationPeriod exceeds the maximum allowed value of 8760h (1 year)" -}}
+{{- end -}}
+{{- end -}}
+{{- if eq .Values.tls.sshCertificate.algorithm "RSA" -}}
+{{- if lt (int .Values.tls.sshCertificate.keySize) 2048 -}}
+{{- fail "tls.sshCertificate.keySize must be at least 2048 for RSA" -}}
+{{- end -}}
+{{- else if eq .Values.tls.sshCertificate.algorithm "ECDSA" -}}
+{{- $ks := int .Values.tls.sshCertificate.keySize -}}
+{{- if not (or (eq $ks 256) (eq $ks 384) (eq $ks 521)) -}}
+{{- fail "tls.sshCertificate.keySize must be one of 256, 384, 521 for ECDSA" -}}
+{{- end -}}
+{{- end -}}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ssh-domain-certificate
+  namespace: {{ .Release.Namespace }}
+spec:
+  secretName: ssh-domain-certificate
+  {{- if .Values.tls.sshCertificate.rotationPeriod }}
+  duration: {{ .Values.tls.sshCertificate.rotationPeriod }}
+  {{- end }}
+  {{- if .Values.tls.sshCertificate.renewBefore }}
+  renewBefore: {{ .Values.tls.sshCertificate.renewBefore }}
+  {{- end }}
+  subject: {{- toYaml .Values.tls.sshCertificate.subject | nindent 4 }}
+  {{- if eq (include "parent.dataplaneMode" . ) "shared" }}
+  commonName: "*.{{ .Values.external_domain }}"
+  {{- else if .Values.multihost.enabled }}
+  commonName: "*.{{ .Values.external_domain }}"
+  {{- else }}
+  commonName: "{{ .Values.external_domain }}"
+  {{- end }}
+  isCA: false
+  dnsNames:
+    {{- if eq (include "parent.dataplaneMode" . ) "shared" }}
+    - "*.{{ .Values.external_domain }}"
+    {{- else if .Values.multihost.enabled }}
+    - "*.{{ .Values.external_domain }}"
+    {{- end }}
+    - {{ .Values.external_domain }}
+  privateKey:
+    algorithm: {{ .Values.tls.sshCertificate.algorithm }}
+    encoding: PKCS8
+    {{- if ne .Values.tls.sshCertificate.algorithm "Ed25519" }}
+    size: {{ .Values.tls.sshCertificate.keySize }}
+    {{- end }}
+    rotationPolicy: {{ .Values.tls.sshCertificate.rotationPolicy }}
+  issuerRef:
+    name: {{ .Values.tls.sshCertificate.issuerRef.name }}
+    kind: {{ .Values.tls.sshCertificate.issuerRef.kind }}
+  keystores:
+    pkcs12:
+      create: true
+      profile: LegacyDES
+      passwordSecretRef:
+        name: ssh-certificate-password
+        key: password
+{{- end -}}

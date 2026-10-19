@@ -1,0 +1,268 @@
+{{- if eq (include "valkey.internal.enabled" .) "true" }}
+{{- include "valkey.internal.validateTopology" . }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ template "valkey.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "valkey.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.valkey.internal.clusterSize }}
+  serviceName: {{ template "valkey.appName" . }}-headless
+{{- if eq (include "valkey.internal.subQuorumFailoverRequired" .) "true" }}
+  minReadySeconds: {{ .Values.valkey.internal.minReadySeconds }}
+{{- end }}
+  selector:
+    matchLabels:
+      {{ include "valkey.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.valkey.internal.podAnnotations }}
+      annotations:
+        {{ toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{ include "valkey.selectorLabels" . | nindent 8 }}
+        dplane: valkey
+        {{- if .Values.zerotrust.enabled }}
+        {{ .Values.zerotrust.managedLabel }}: "true"
+        {{- end }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.valkey.internal.terminationGracePeriodSeconds }}
+      {{- with .Values.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.valkey.internal.serviceAccount.enabled }}
+      serviceAccountName: {{ include "valkey.serviceAccountName" . }}
+      {{- end }}
+      {{- if .Values.valkey.internal.podSecurityContextEnabled }}
+      securityContext: {{ toYaml .Values.valkey.internal.podSecurityContext | nindent 8 }}
+        {{- if or .Values.logging.logFileEnabled .Values.fluentBit.enabled }}
+          {{- include "dataplane.createLogDirectoryInitContainer" (dict "serviceName" "valkey" "securityContext" .Values.valkey.internal.securityContext "additionalPathParam" "" "root" .) | nindent 6 }}
+        {{- end }}
+      {{- end }}
+
+      dnsConfig:
+        options:
+          - name: use-vc
+
+      containers:
+        {{- if .Values.zerotrust.enabled }}
+        - name: {{ template "valkey.appName" . }}-certs-refresh
+          image: {{ .Values.image.repository }}/{{ .Values.zerotrust.providers.spire.tools.image.name }}:{{ .Values.zerotrust.providers.spire.tools.image.buildTag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{ toYaml .Values.valkey.internal.securityContext | nindent 12 }}
+          command: ["/bin/bash", "/scripts/spire-cert-refresh.sh"]
+          env:
+            - name: CERT_DIR
+              value: /tls
+            - name: SPIRE_AGENT_SOCKET_PATH
+              value: /spire/spire-agent.sock
+            - name: AGENT_READINESS_TIMEOUT
+              value: {{ .Values.zerotrust.providers.spire.tools.agentReadiness.timeoutSeconds | quote }}
+            - name: CERT_CHECK_IN_SECONDS
+              value: {{ .Values.zerotrust.providers.spire.tools.certRefresh.checkIntervalSeconds | quote }}
+            - name: CERT_RENEW_BEFORE_EXPIRY_SECONDS
+              value: {{ .Values.zerotrust.providers.spire.tools.certRefresh.renewBeforeExpirySeconds | quote }}
+          volumeMounts:
+            - name: spire-agent-socket
+              mountPath: /spire
+              readOnly: true
+            - name: tls-certs
+              mountPath: /tls
+          {{- with .Values.zerotrust.providers.spire.tools.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
+        - name: {{ template "valkey.appName" . }}
+          securityContext:
+            {{ toYaml .Values.valkey.internal.securityContext | nindent 12 }}
+          image: "{{ default .Values.image.repository .Values.valkey.internal.image.repository }}/{{ .Values.valkey.internal.image.name }}:{{ .Values.valkey.internal.image.buildTag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: valkey-client
+              containerPort: 6379
+            - name: valkey-cluster
+              containerPort: 16379
+            - name: metrics
+              containerPort: 8181
+          lifecycle:
+            # The wrapper timeout must stay ahead of pre-stop.sh's own worst-case internal
+            # budget (wait_for_replication's 30s loop + notify_controller_prepare's 5s curl +
+            # gracefulHandoffTimeoutSeconds), or this wrapper can SIGTERM pre-stop.sh mid-handoff
+            # before its own bounded wait_for_graceful_handoff() ever gets to log-and-continue
+            # cleanly. Note the 30s/5s figures are loop/curl budgets, not a hard bound on the
+            # underlying valkey-cli calls: check_replication_lag() and wait_for_graceful_handoff()
+            # both call valkey_cli_to_node with a non-numeric first argument after host/port, and
+            # common-functions.sh's valkey_cli_to_node only wraps the call in `timeout` when that
+            # argument is numeric - so those specific calls get no timeout at all and can block
+            # indefinitely against a hung server. 50s (valkey.internal.preStopFixedBudgetSeconds)
+            # covers the nominal 30s+5s budget plus script-call overhead; the configurable
+            # gracefulHandoffTimeoutSeconds is added on top so raising that value can never
+            # silently erode this margin again, and validateTopology's fail-fast guard rejects
+            # values that would blow the overall terminationGracePeriodSeconds budget.
+            preStop:
+              exec:
+                command:
+                  - bash
+                  - -c
+                  - >
+                    timeout {{ add (int (include "valkey.internal.preStopFixedBudgetSeconds" .)) (int .Values.valkey.internal.gracefulHandoffTimeoutSeconds) }} /scripts/pre-stop.sh || echo 'preStop timeout reached - continuing with shutdown'
+
+          {{- if .Values.valkey.internal.startupProbe.enabled }}
+          startupProbe:
+            initialDelaySeconds: {{ .Values.valkey.internal.startupProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.valkey.internal.startupProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.valkey.internal.startupProbe.timeoutSeconds }}
+            successThreshold: {{ .Values.valkey.internal.startupProbe.successThreshold }}
+            failureThreshold: {{ .Values.valkey.internal.startupProbe.failureThreshold }}
+            exec:
+              command:
+                - bash
+                - -c
+                - /scripts/health-check.sh startup {{ .Values.valkey.internal.startupProbe.timeoutSeconds }}
+          {{- end }}
+          {{- if .Values.valkey.internal.livenessProbe.enabled }}
+          livenessProbe:
+            initialDelaySeconds: {{ .Values.valkey.internal.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.valkey.internal.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.valkey.internal.livenessProbe.timeoutSeconds }}
+            successThreshold: {{ .Values.valkey.internal.livenessProbe.successThreshold }}
+            failureThreshold: {{ .Values.valkey.internal.livenessProbe.failureThreshold }}
+            exec:
+              command:
+                - bash
+                - -c
+                - /scripts/health-check.sh liveness {{ .Values.valkey.internal.livenessProbe.timeoutSeconds }}
+          {{- end }}
+
+          {{- if .Values.valkey.internal.readinessProbe.enabled }}
+          readinessProbe:
+            initialDelaySeconds: {{ .Values.valkey.internal.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.valkey.internal.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.valkey.internal.readinessProbe.timeoutSeconds }}
+            successThreshold: {{ .Values.valkey.internal.readinessProbe.successThreshold }}
+            failureThreshold: {{ .Values.valkey.internal.readinessProbe.failureThreshold }}
+            exec:
+              command:
+                - bash
+                - -c
+                - /scripts/health-check.sh readiness {{ .Values.valkey.internal.readinessProbe.timeoutSeconds }}
+          {{- end }}
+          env:
+            - name: VALKEY_DIR
+              value: "{{ .Values.valkey.internal.valkeyDir }}"
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.datagrid.name }}
+                  key: datagrid_password
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CLUSTER_SIZE
+              value: "{{ .Values.valkey.internal.clusterSize }}"
+            - name: REPLICAS_PER_MASTER
+              value: "{{ .Values.valkey.internal.replicasPerMaster }}"
+            - name: SUB_QUORUM_FAILOVER_REQUIRED
+              value: "{{ include "valkey.internal.subQuorumFailoverRequired" . }}"
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- if eq (include "valkey.internal.subQuorumFailoverRequired" .) "true" }}
+            - name: VALKEY_LEASE_NAME
+              value: "{{ .Values.valkey.internal.failoverController.leaderElection.leaseName }}"
+            - name: VALKEY_SIGNAL_LEASE_NAME
+              value: "{{ .Values.valkey.internal.failoverController.leaderElection.signalLeaseName }}"
+            - name: FENCE_GRACE_SECONDS
+              value: "{{ include "valkey.internal.fenceGraceSeconds" . }}"
+            - name: GRACEFUL_HANDOFF_TIMEOUT
+              value: "{{ .Values.valkey.internal.gracefulHandoffTimeoutSeconds }}"
+            {{- end }}
+            - name: VALKEY_PORT
+              value: "6379"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: METRICS_ENABLED
+              value: "{{ .Values.valkey.internal.metrics.enabled }}"
+            {{- with .Values.valkey.internal.env }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.valkey.internal.resources | nindent 12 }}
+          volumeMounts:
+            - name: {{ .Values.valkey.internal.persistence.claimTemplateName }}
+              mountPath: {{ .Values.valkey.internal.valkeyDir }}
+            - name: config
+              mountPath: /config
+            {{- if .Values.zerotrust.enabled }}
+            - name: tls-certs
+              mountPath: /tls
+            {{- end }}
+            {{- if .Values.logging.logFileEnabled }}
+            - name: {{ .Values.storage.volumeStorageName }}
+              mountPath: {{ .Values.valkey.internal.valkeyDir }}/logs
+              subPathExpr: {{ if ne (include "parent.dataplaneMode" . ) "shared" }}clusters/{{ tpl  .Values.clusterRefId . }}/{{ end }}logs/valkey/$(POD_NAME)
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: configmap-common
+            {{- if .Values.email.authentication }}
+            - secretRef:
+                name: {{ .Values.email.credentials.name }}
+            {{- end }}
+            - secretRef:
+                name: {{ .Values.secrets.datagrid.name }}
+
+      volumes:
+        {{- if .Values.zerotrust.enabled }}
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/sockets
+            type: DirectoryOrCreate
+        - name: tls-certs
+          emptyDir: { }
+        {{- end }}
+        - name: config
+          configMap:
+            name: {{ template "valkey.appName" . }}-config
+        - name: {{ .Values.storage.volumeStorageName }}
+          persistentVolumeClaim:
+            claimName: {{ .Release.Namespace }}-{{ .Values.storage.claimName }}
+
+      {{- with .Values.valkey.internal.nodeSelector }}
+      nodeSelector:
+        {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.valkey.internal.affinity }}
+      affinity:
+        {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.valkey.internal.tolerations }}
+      tolerations:
+        {{ toYaml . | nindent 8 }}
+      {{- end }}
+
+  volumeClaimTemplates:
+    - metadata:
+        name: {{ .Values.valkey.internal.persistence.claimTemplateName }}
+        labels:
+          {{ include "valkey.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes:
+          - {{ .Values.valkey.internal.persistence.claimTemplateAccessModes }}
+        resources:
+          requests:
+            storage: {{ .Values.valkey.internal.persistence.claimTemplateRequestStorage }}
+        {{- if .Values.valkey.internal.persistence.claimTemplateStorageClass }}
+        storageClassName: {{ .Values.valkey.internal.persistence.claimTemplateStorageClass }}
+        {{- end }}
+{{- end }}

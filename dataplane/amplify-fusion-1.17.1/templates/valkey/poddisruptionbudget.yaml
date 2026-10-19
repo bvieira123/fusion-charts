@@ -1,0 +1,14 @@
+{{- if eq (include "valkey.internal.pdb.enabled" .) "true" }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ template "valkey.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "valkey.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.valkey.internal.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{ include "valkey.selectorLabels" . | nindent 6 }}
+{{- end }}

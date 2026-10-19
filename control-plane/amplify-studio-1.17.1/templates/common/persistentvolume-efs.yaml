@@ -1,0 +1,17 @@
+{{- if .Values.common.efs.enabled -}}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Values.common.efs.pv }}
+spec:
+  capacity:
+    storage: {{ .Values.common.efs.capacity }}
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: {{ .Values.common.efs.sc }}
+  csi:
+    driver: efs.csi.aws.com
+    volumeHandle: {{ .Values.common.efs.id }}
+{{- end -}}

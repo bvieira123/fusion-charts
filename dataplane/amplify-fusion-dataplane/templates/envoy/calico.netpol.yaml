@@ -1,0 +1,71 @@
+{{- if .Values.envoy.calicoNetpol.enabled }}
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: {{ template "envoy.appName" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  order: 10
+  selector: dplane == 'envoy'
+  types:
+    - Ingress
+    - Egress
+  ingress:
+    ### traffic from the load balancer ###
+    - action: Allow
+      protocol: TCP
+      source: {{ toYaml .Values.envoy.calicoNetpol.subnetEntityRule | nindent 8 }}
+      destination:
+        ports:
+          {{- range .Values.envoy.service.ports }}
+          - {{ .targetPort }}
+          {{- end }}
+  egress:
+    # allow to communicate to DNS pods
+    - action: Allow
+      protocol: UDP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    - action: Allow
+      protocol: TCP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    ### Traffic to pep-server (XDS gRPC / ext-proc) ###
+    - action: Allow
+      protocol: TCP
+      destination:
+        selector: dplane == 'pep-server'
+        namespaceSelector: projectcalico.org/name == '{{ .Release.Namespace }}'
+        ports:
+          {{- range .Values.pepServer.service.ports }}
+          - {{ .targetPort }}
+          {{- end }}
+    ### Traffic to orchestrator ###
+    - action: Allow
+      protocol: TCP
+      destination:
+        selector: dplane == 'orchestrator'
+        namespaceSelector: projectcalico.org/name == '{{ .Release.Namespace }}'
+        ports:
+          {{- range .Values.orchestrator.service.ports }}
+          - {{ .targetPort }}
+          {{- end }}
+    ### Traffic to inbound-worker ###
+    - action: Allow
+      protocol: TCP
+      destination:
+        selector: dplane == 'inbound-worker'
+        namespaceSelector: projectcalico.org/name == '{{ .Release.Namespace }}'
+        ports:
+          {{- range .Values.inboundWorker.service.ports }}
+          - {{ .targetPort }}
+          {{- end }}
+    ### Traffic to the internet ###
+    - action: Allow
+      protocol: TCP
+      destination: {{ toYaml .Values.envoy.calicoNetpol.outboundRule | nindent 8 }}
+{{- end }}

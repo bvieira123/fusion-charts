@@ -1,0 +1,18 @@
+{{- if eq (include "valkey.internal.enabled" .) "true" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ template "valkey.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "valkey.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: valkey-client
+      port: 6379
+      targetPort: valkey-client
+      protocol: TCP
+  selector:
+    {{ include "valkey.selectorLabels" . | nindent 4 }}
+{{- end }}

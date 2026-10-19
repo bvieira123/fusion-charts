@@ -1,0 +1,12 @@
+{{- if and .Values.zerotrust.enabled (not .Values.zerotrust.providers.spire.preexisting) }}
+{{- if not (lookup "v1" "Namespace" "" (include "spire.namespace" .)) }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "spire.namespace" . }}
+  annotations:
+    {{ include "spire.keepAnnotation" . | nindent 4 }}
+  labels:
+    {{ include "dataplane.labels" . | nindent 4 }}
+{{- end }}
+{{- end }}

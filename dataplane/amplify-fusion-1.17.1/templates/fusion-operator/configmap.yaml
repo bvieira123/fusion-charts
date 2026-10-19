@@ -1,0 +1,20 @@
+{{- if .Values.fusionOperator.enabled }}
+{{- if and (eq .Values.common.externalConfigMaps false) (eq  (include "parent.dataplaneMode" . ) "shared") }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "fusionOperator.appName" . }}
+  namespace: {{ .Release.Namespace }}
+data:
+  app_env: {{ .Values.global.appEnv }}
+  release_namespace: {{ .Release.Namespace }}
+  deployment_spec: |-
+    {{- include "orchestrator.deployment" . | nindent 4 }}
+  pdb_spec: |-
+    {{- include "orchestrator.podDisruptionBudget" . | nindent 4 }}
+  service_spec: |-
+    {{- include "orchestrator.service" . | nindent 4 }}
+  hpa_spec: |-
+    {{- include "orchestrator.hpa" . | nindent 4 }}
+{{- end }}
+{{- end }}

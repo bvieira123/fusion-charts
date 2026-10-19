@@ -1,0 +1,30 @@
+{{- if ( and .Values.marketplaceAgent.serviceAccount.enabled ( not .Values.marketplaceAgent.serviceAccount.preexisting ) ) -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: marketplaceAgent-role
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+
+  - apiGroups:
+      - batch
+    resources:
+      - jobs
+    verbs:
+      - get
+      - list
+      - watch
+{{- end }}

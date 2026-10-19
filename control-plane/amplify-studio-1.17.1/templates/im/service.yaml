@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ template "im.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "im.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.im.service.type }}
+  selector:
+    {{- include "im.selectorLabels" . | nindent 4 }}
+  ports:
+    {{- range $port := .Values.im.service.ports }}
+    - name: {{ $port.name }}
+      protocol: {{ $port.protocol }}
+      port: {{ $port.port }}
+      targetPort: {{ $port.targetPort }}
+    {{- end }}

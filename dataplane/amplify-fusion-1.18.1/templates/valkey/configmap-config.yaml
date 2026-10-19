@@ -1,0 +1,102 @@
+{{- if and (include "valkey.internal.enabled" .) (not .Values.externalConfigMaps) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "valkey.appName" . }}-config
+  namespace: {{ .Release.Namespace }}
+data:
+  valkey.conf: |-
+    # Core cluster settings
+{{- if .Values.zerotrust.enabled }}
+    port 0
+    tls-port 6379
+{{- else }}
+    port 6379
+{{- end }}
+{{- if eq (include "valkey.internal.standalone" .) "true" }}
+    cluster-enabled no
+{{- else }}
+    cluster-enabled yes
+{{- end }}
+    cluster-config-file "nodes.conf"
+    cluster-node-timeout {{ .Values.valkey.internal.clusterNodeTimeout }}
+    cluster-require-full-coverage no
+    notify-keyspace-events KEA
+
+    # Network
+    bind 0.0.0.0
+{{- if .Values.zerotrust.enabled }}
+    cluster-announce-tls-port 6379
+{{- else }}
+    cluster-announce-port 6379
+{{- end }}
+    cluster-announce-bus-port 16379
+
+    # Security
+    protected-mode no
+    requirepass insertpass
+    primaryauth insertpass
+{{- if .Values.zerotrust.enabled }}
+    tls-cluster yes
+    tls-replication yes
+    tls-cert-file /tls/server.crt
+    tls-key-file /tls/server.key
+    tls-ca-cert-file /tls/ca.crt
+    tls-auth-clients yes
+    unixsocket {{ .Values.valkey.internal.valkeyDir }}/valkey.sock
+    unixsocketperm 700
+{{- end }}
+
+    # Storage
+    dir {{ .Values.valkey.internal.valkeyDir }}
+
+    {{- if eq .Values.valkey.internal.persistence.appendonly "yes" }}
+    appendonly {{ .Values.valkey.internal.persistence.appendonly }}
+    appendfsync everysec
+    no-appendfsync-on-rewrite yes
+    {{- end }}
+
+    {{ include "valkey.saveConfig" . }}
+
+    # Memory
+    {{- if not .Values.valkey.internal.resources.limits.memory }}
+    # WARNING: resources.limits.memory is not set!
+    # Valkey maxmemory is set to minimal 64MB default.
+    # Consider setting resources.limits.memory to suit your use case.
+    {{- end }}
+    maxmemory {{ include "valkey.maxmemory" . }}
+    maxmemory-policy {{ .Values.valkey.internal.maxMemoryPolicy }}
+
+    # Process
+    daemonize no
+    loglevel {{ .Values.valkey.internal.logLevel }}
+    logfile "{{ if .Values.logging.logFileEnabled }}logs/valkey.log{{ end }}"
+    {{- if .Values.logging.logJsonEnabled }}
+    log-format {{ .Values.valkey.internal.logFormat }}
+    log-timestamp-format {{ .Values.valkey.internal.logTimeStampFormat }}
+    {{- end }}
+
+    # Replica
+    replica-serve-stale-data yes
+    replica-read-only yes
+
+{{- if eq (include "valkey.internal.subQuorumFailoverRequired" .) "true" }}
+    # Data-plane self-fence, boot-time default: the primary refuses writes unless it can get a
+    # replication ACK from this many replicas within minReplicasMaxLagSeconds - independent of
+    # the Lease-controller's Kubernetes-control-plane-based STONITH mechanism, keyed off the
+    # actual replication link rather than pod/API-server state.
+    #
+    # This strict value is the fail-closed STARTING point only. lease-watchdog.sh is the sole
+    # runtime writer of min-replicas-to-write: it lowers the value while the Kubernetes API
+    # confirms an own-shard replica cannot be promoted, and raises it again once the replication
+    # link is genuinely back and acking - so losing a replica to a restart, drain or rolling
+    # upgrade no longer stops writes, while a promoted replica still cannot be dual-written
+    # against. Rendering the strict value here means every pod boots fenced, and any failure of
+    # the watchdog leaves it fenced rather than open.
+    #
+    # Only rendered when the sub-quorum controller is deployed (subQuorumFailoverRequired) -
+    # existing native-quorum (>=3 primary) or opted-out deployments are unaffected.
+    min-replicas-to-write {{ .Values.valkey.internal.replicasPerMaster }}
+    min-replicas-max-lag {{ .Values.valkey.internal.minReplicasMaxLagSeconds }}
+{{- end }}
+{{- end }}

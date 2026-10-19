@@ -1,0 +1,57 @@
+{{- if .Values.envoy.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ template "envoy.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  {{- if .Values.envoy.service.annotations }}
+  {{- with .Values.envoy.service.annotations }}
+  annotations:
+    {{- tpl (toYaml .) $ | nindent 4 }}
+  {{- end }}
+  {{- else }}
+  annotations:
+  {{- end }}
+    {{- if eq  (include "parent.dataplaneMode" . ) "shared" }}
+    external-dns.alpha.kubernetes.io/hostname: {{ .Values.shared_lb_prefix }}.{{ .Values.external_domain }}
+    {{- else if .Values.multihost.enabled}}
+    external-dns.alpha.kubernetes.io/hostname: "*.{{ .Values.external_domain }}"
+    {{- else }}
+    external-dns.alpha.kubernetes.io/hostname: "{{ .Values.external_domain }}"
+    {{- end }}
+    service.beta.kubernetes.io/aws-load-balancer-connection-idle-timeout: "{{ .Values.envoy.timeouts.loadbalancer }}"
+  labels:
+    {{- include "envoy.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.envoy.service.type }}
+  selector:
+    {{- include "envoy.selectorLabels" . | nindent 4 }}
+  ports:
+  {{- if .Values.envoy.exposeProxyAdminPort }}
+    - name: admin
+      port: {{ .Values.envoy.proxyAdminPort }}
+      targetPort: admin
+      protocol: TCP
+  {{- end }}
+  {{- if .Values.multihost.enabled }}
+    - name: ssh
+      protocol: TCP
+      port: {{ .Values.multihost.listeners.ssh.port }}
+      targetPort: 2222
+    - name: tls
+      protocol: TCP
+      port: {{ .Values.multihost.listeners.tls.port }}
+      targetPort: 8443
+    - name: http
+      protocol: TCP
+      port: {{ .Values.multihost.listeners.tcp.port }}
+      targetPort: 9080
+  {{- else }}
+    {{- range $port := .Values.envoy.service.ports }}
+    - name: {{ $port.name }}
+      protocol: {{ $port.protocol }}
+      port: {{ $port.port }}
+      targetPort: {{ $port.targetPort }}
+    {{- end }}
+  {{- end }}
+{{- end -}}

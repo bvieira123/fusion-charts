@@ -1,0 +1,49 @@
+{{- if and .Values.zerotrust.enabled (not .Values.zerotrust.providers.spire.preexisting) .Values.zerotrust.providers.spire.agent.calicoNetpol.enabled }}
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: {{ include "spire-agent.fullname" . }}
+  namespace: {{ include "spire.namespace" . }}
+  annotations:
+    {{ include "spire.keepAnnotation" . }}
+spec:
+  order: 10
+  selector: dplane == 'spire-agent'
+  types:
+    - Egress
+  egress:
+    ### IMPORTANT: spire-agent uses hostNetwork:true — kubelet liveness/readiness probes and the
+    ### kubelet workload attestor both go through loopback and are not filtered by Calico.
+    ### No ingress rules are needed.
+    # allow to communicate to DNS pods
+    - action: Allow
+      protocol: UDP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    - action: Allow
+      protocol: TCP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    # allow to communicate with k8s API server (token reviews, node/pod/namespace lookups)
+    - action: Allow
+      destination:
+        services:
+          name: kubernetes
+          namespace: default
+      protocol: TCP
+    {{- if .Values.zerotrust.providers.spire.agent.calicoNetpol.outboundRule }}
+    ### Outbound to spire-server — gRPC node attestation (port 8081) and health polling (port 8080) ###
+    ### The init-server init container polls :8080/ready before the agent starts.                   ###
+    - action: Allow
+      protocol: TCP
+      destination:
+        ports:
+          - 8081
+          - 8080
+        {{- toYaml .Values.zerotrust.providers.spire.agent.calicoNetpol.outboundRule | nindent 8 }}
+    {{- end }}
+{{- end }}

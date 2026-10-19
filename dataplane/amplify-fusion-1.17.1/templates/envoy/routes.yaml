@@ -1,0 +1,114 @@
+{{- if and .Values.global.multihost.enabled .Values.envoy.route.https.enabled -}}
+kind: Route
+apiVersion: route.openshift.io/v1
+metadata:
+  name: {{ template "envoy.appName" . }}-https
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{- include "envoy.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ template "envoy.appName" . }}
+spec:
+  host: {{ .Values.global.multihost.listeners.tls.https.hostPrefix }}.{{ .Values.global.external_domain }}
+  to:
+    kind: Service
+    name: {{ template "envoy.appName" . }}
+  port:
+    targetPort: 8443
+  tls:
+    termination: passthrough
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None
+{{- end }}
+
+---
+
+{{- if and .Values.global.multihost.enabled .Values.envoy.route.api.enabled -}}
+kind: Route
+apiVersion: route.openshift.io/v1
+metadata:
+  name: {{ template "envoy.appName" . }}-apim
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{- include "envoy.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ template "envoy.appName" . }}
+spec:
+  host: {{ .Values.global.multihost.listeners.tls.api.hostPrefix }}.{{ .Values.global.external_domain }}
+  to:
+    kind: Service
+    name: {{ template "envoy.appName" . }}
+  port:
+    targetPort: 8443
+  tls:
+    termination: passthrough
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None
+{{- end }}
+
+---
+
+{{- if and .Values.global.multihost.enabled .Values.envoy.route.api_mtls.enabled -}}
+kind: Route
+apiVersion: route.openshift.io/v1
+metadata:
+  name: {{ template "envoy.appName" . }}-apim-mtls
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{- include "envoy.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ template "envoy.appName" . }}
+spec:
+  host: {{ .Values.global.multihost.listeners.tls.api_mtls.hostPrefix }}.{{ .Values.global.external_domain }}
+  to:
+    kind: Service
+    name: {{ template "envoy.appName" . }}
+  port:
+    targetPort: 8443
+  tls:
+    termination: passthrough
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None
+{{- end }}
+
+---
+
+{{- if and .Values.global.multihost.enabled .Values.envoy.route.webhook.enabled -}}
+kind: Route
+apiVersion: route.openshift.io/v1
+metadata:
+  name: {{ template "envoy.appName" . }}-webhook
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{- include "envoy.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ template "envoy.appName" . }}
+spec:
+  host: {{ .Values.global.multihost.listeners.tls.webhook.hostPrefix }}.{{ .Values.global.external_domain }}
+  to:
+    kind: Service
+    name: {{ template "envoy.appName" . }}
+  port:
+    targetPort: 8443
+  tls:
+    termination: passthrough
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None
+{{- end }}
+
+---
+
+{{- if and .Values.global.multihost.enabled .Values.envoy.route.http.enabled -}}
+kind: Route
+apiVersion: route.openshift.io/v1
+metadata:
+  name: {{ template "envoy.appName" . }}-http
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "envoy.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ template "envoy.appName" . }}
+spec:
+  host: {{ .Values.global.multihost.listeners.tcp.http.hostPrefix }}.{{ .Values.global.external_domain }}
+  to:
+    kind: Service
+    name: {{ template "envoy.appName" . }}
+  port:
+    targetPort: 9080
+  wildcardPolicy: None
+{{- end }}

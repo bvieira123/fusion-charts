@@ -1,0 +1,15 @@
+{{- if .Values.storage.azfiles.enabled -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Namespace }}-{{ .Values.storage.claimName }}
+spec:
+  accessModes:
+    - {{ .Values.storage.persistence.claimAccessMode }}
+  storageClassName: {{ .Values.storage.azfiles.storageClassName }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.persistence.claimRequestCapacity }}
+  volumeMode: Filesystem
+  volumeName: {{ .Release.Namespace }}-{{ .Values.storage.persistence.volumeName }}
+{{- end -}}

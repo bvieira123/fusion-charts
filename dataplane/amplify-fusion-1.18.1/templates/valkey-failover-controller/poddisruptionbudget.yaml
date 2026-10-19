@@ -1,0 +1,14 @@
+{{- if and (eq (include "valkey.internal.subQuorumFailoverRequired" .) "true") .Values.valkey.internal.failoverController.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ template "valkeyFailoverController.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "valkeyFailoverController.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.valkey.internal.failoverController.podDisruptionBudget.minPods }}
+  selector:
+    matchLabels:
+      {{ include "valkeyFailoverController.selectorLabels" . | nindent 6 }}
+{{- end }}

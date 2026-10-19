@@ -1,0 +1,102 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: hazelcast-log-cleanup
+  namespace: amplify-studio
+  labels:
+    app.kubernetes.io/name: hazelcast-log-cleanup
+    app.kubernetes.io/part-of: amplify-studio
+spec:
+  schedule: "15 * * * *"
+  timeZone: America/Sao_Paulo
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 600
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: hazelcast-log-cleanup
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            fsGroup: 1001
+            supplementalGroups:
+              - 1001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: cleanup
+              image: busybox:1.37.0
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 10010
+                runAsGroup: 10020
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              env:
+                - name: TARGET_DIR
+                  value: /efs/logs/hazelcast/hazelcast-studio-0/archived
+                - name: RETENTION_DAYS
+                  value: "2"
+                - name: MAX_ARCHIVE_KB
+                  value: "1048576"
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  if [ ! -d "${TARGET_DIR}" ]; then
+                    echo "Diretorio nao encontrado: ${TARGET_DIR}"
+                    exit 1
+                  fi
+
+                  echo "Inicio da limpeza: $(date -u)"
+                  echo "Uso inicial:"
+                  du -sh "${TARGET_DIR}"
+
+                  echo "Removendo logs com mais de ${RETENTION_DAYS} dias:"
+                  find "${TARGET_DIR}" \
+                    -maxdepth 1 \
+                    -type f \
+                    -name 'hazelcast.*.log' \
+                    -mtime "+${RETENTION_DAYS}" \
+                    -print \
+                    -exec rm -f {} \;
+
+                  current_kb="$(du -sk "${TARGET_DIR}" | awk '{print $1}')"
+                  if [ "${current_kb}" -gt "${MAX_ARCHIVE_KB}" ]; then
+                    echo "Arquivo de logs acima do limite de ${MAX_ARCHIVE_KB} KiB. Removendo os mais antigos:"
+                    ls -1tr "${TARGET_DIR}"/hazelcast.*.log 2>/dev/null | while IFS= read -r log_file; do
+                      current_kb="$(du -sk "${TARGET_DIR}" | awk '{print $1}')"
+                      [ "${current_kb}" -le "${MAX_ARCHIVE_KB}" ] && break
+                      echo "${log_file}"
+                      rm -f "${log_file}"
+                    done
+                  fi
+
+                  echo "Uso final:"
+                  du -sh "${TARGET_DIR}"
+                  echo "Fim da limpeza: $(date -u)"
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+              volumeMounts:
+                - name: efs-storage
+                  mountPath: /efs
+          volumes:
+            - name: efs-storage
+              persistentVolumeClaim:
+                claimName: azure-fileshare-pvc

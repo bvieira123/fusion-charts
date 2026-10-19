@@ -1,0 +1,67 @@
+{{- if and (eq (include "valkey.internal.enabled" .) "true") .Values.valkey.internal.calicoNetpol.enabled }}
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: {{ template "valkey.appName" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  order: 10
+  selector: dplane == 'valkey'
+  types:
+    - Ingress
+    - Egress
+  ingress:
+    ### traffic from inbound-worker, orchestrator, valkey, sink agent, pep server, migrator job and valkey-failover-controller ###
+    - action: Allow
+      protocol: TCP
+      source:
+        selector: dplane == 'orchestrator' || dplane == 'inbound-worker' || dplane == 'valkey' ||  dplane == 'sink-agent' || dplane == 'pep-server' || dplane == 'migrator-job' || dplane == 'valkey-failover-controller'
+        namespaceSelector: projectcalico.org/name == '{{ .Release.Namespace }}'
+      destination:
+        ports:
+          - 6379
+          - 16379
+    {{- if and .Values.valkey.internal.metrics.enabled .Values.valkey.internal.calicoNetpol.prometheusRule }}
+    ### metrics port (8181) - prometheus scrape (opt-in) ###
+    - action: Allow
+      protocol: TCP
+      source: {{ toYaml .Values.valkey.internal.calicoNetpol.prometheusRule | nindent 8 }}
+      destination:
+        ports:
+          - 8181
+    {{- end }}
+  egress:
+    # allow to communicate to DNS pods
+    - action: Allow
+      protocol: UDP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    - action: Allow
+      protocol: TCP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    # allow to communicate with k8s api server - needed in every topology for the
+    # successor-pod-existence readiness check (health-check.sh); also used in sub-quorum
+    # topologies by lease-watchdog.sh's self-fence heartbeat and pre-stop.sh's
+    # graceful-shutdown signal PATCH. RBAC (role.yaml) is the actual authorization
+    # boundary; this only opens the network path.
+    - action: Allow
+      destination:
+        services:
+          name: kubernetes
+          namespace: default
+      protocol: TCP
+    # allow to communicate with itself for clustering
+    - action: Allow
+      protocol: TCP
+      destination:
+        selector: dplane == 'valkey'
+        namespaceSelector: projectcalico.org/name == '{{ .Release.Namespace }}'
+        ports:
+          - 6379
+          - 16379
+{{- end }}

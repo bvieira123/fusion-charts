@@ -1,0 +1,26 @@
+{{- if .Values.api.calicoNetpol.enabled }}
+### Open any additional ports for the ingress controller to ampint.ctlplane pods & namespace
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: {{ template "api.appName" . }}-ingress-controller
+  namespace: {{ .Values.api.calicoNetpol.ingressController.namespace }}
+spec:
+  order: 10
+  selector: {{ .Values.api.calicoNetpol.ingressController.podSelector }}
+  types:
+    - Egress
+  egress:
+    - action: Allow
+      protocol: TCP
+      source:
+        selector: {{ .Values.api.calicoNetpol.ingressController.podSelector }}
+      destination:
+        selector: has(ampint.ctlplane)
+        namespaceSelector: projectcalico.org/name == "{{ .Release.Namespace }}"
+        ports:
+          - 8080
+          - 9080
+          - 80
+          - 443
+{{- end }}

@@ -1,0 +1,118 @@
+{{- if or ( or .Values.predeploy.masterschemamigration.enabled .Values.predeploy.tenantmigration.enabled ) .Values.predeploy.datamigration.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # add 2 hash dependent on the image tags so that each job replace the previous one for a helm upgrade if you change any of the build tags
+  name: {{ include "predeploy.appName" . }}-master-schema-
+    {{- .Values.predeploy.masterschemamigration.enabled | ternary (.Values.predeploy.masterschemamigration.image.buildTag | sha1sum | trunc 6) "" }}-
+    {{- .Values.predeploy.tenantmigration.enabled | ternary (.Values.predeploy.tenantmigration.image.buildTag | sha1sum | trunc 6) "" }}-
+    {{- .Values.predeploy.datamigration.enabled | ternary (.Values.predeploy.datamigration.image.buildTag | sha1sum | trunc 6) "" }}-job
+  labels:
+    ampint.ctlplane: "master-schema-job"
+spec:
+  template:
+    metadata:
+      labels:
+        ampint.ctlplane: "master-schema-job"
+    spec:
+      {{- with .Values.global.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.predeploy.serviceAccount.enabled }}
+      serviceAccountName: {{ include "predeploy.serviceAccountName" . }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.predeploy.podSecurityContext | nindent 8 }}
+      initContainers:
+        {{- if .Values.predeploy.masterschemamigration.enabled }}
+        - name: master-schema
+          securityContext: {{- toYaml .Values.predeploy.securityContext | nindent 12 }}
+          image: "{{ default .Values.global.image.repository .Values.predeploy.masterschemamigration.image.repository }}/{{ .Values.predeploy.masterschemamigration.image.name }}:{{ .Values.predeploy.masterschemamigration.image.buildTag }}"
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.common.postgresCredentials.name }}
+          volumeMounts:
+            - mountPath: /target
+              name: target
+            - mountPath: /tmp
+              name: tmp
+          env:
+            - name: spring_datasource_url
+              value: jdbc:postgresql://{{ .Values.global.rdb_endpoint }}/{{ .Values.global.rdb_name }}
+          {{- with .Values.predeploy.masterschemamigration.env }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.predeploy.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
+        {{- if .Values.predeploy.tenantmigration.enabled }}
+        - name: tenant-migration
+          securityContext: {{- toYaml .Values.predeploy.securityContext | nindent 12 }}
+          image: "{{ default .Values.global.image.repository .Values.predeploy.tenantmigration.image.repository }}/{{ .Values.predeploy.tenantmigration.image.name }}:{{ .Values.predeploy.tenantmigration.image.buildTag }}"
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.common.postgresCredentials.name }}
+          env:
+            - name: spring_datasource_url
+              value: jdbc:postgresql://{{ .Values.global.rdb_endpoint }}/{{ .Values.global.rdb_name }}
+          {{- with .Values.predeploy.tenantmigration.env }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.predeploy.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - mountPath: /target
+              name: target
+            - mountPath: /tmp
+              name: tmp
+          {{- end }}
+        {{- if .Values.predeploy.datamigration.enabled }}
+        - name: data-migration
+          securityContext: {{- toYaml .Values.predeploy.securityContext | nindent 12 }}
+          image: "{{ default .Values.global.image.repository .Values.predeploy.datamigration.image.repository }}/{{ .Values.predeploy.datamigration.image.name }}:{{ .Values.predeploy.datamigration.image.buildTag }}"
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.common.postgresCredentials.name }}
+          env:
+            - name: spring_datasource_url
+              value: jdbc:postgresql://{{ .Values.global.rdb_endpoint }}/{{ .Values.global.rdb_name }}
+          {{- with .Values.predeploy.datamigration.env }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.predeploy.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - mountPath: /target
+              name: target
+            - mountPath: /tmp
+              name: tmp
+          {{- end }}
+      containers:
+        - name: {{ include "predeploy.appName" . }}-dummy
+          securityContext: {{- toYaml .Values.predeploy.securityContext | nindent 12 }}
+          image: "{{ default .Values.global.image.repository .Values.predeploy.masterschemamigration.image.repository }}/{{ .Values.predeploy.masterschemamigration.image.name }}:{{ .Values.predeploy.masterschemamigration.image.buildTag }}"
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          command: ['sh', '-c', 'echo "Init jobs completed. See their logs for more information (using init-containers to run sequentially)"']
+      restartPolicy: Never
+      {{- with .Values.predeploy.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.predeploy.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.predeploy.tolerations }}
+      tolerations:  {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: target
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+  backoffLimit: 2
+{{- end -}}

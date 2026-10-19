@@ -1,0 +1,72 @@
+{{- if .Values.sinkAgent.calicoNetpol.enabled }}
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: {{ template "sink-agent.appName" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  order: 10
+  selector: dplane == 'sink-agent'
+  types:
+    - Ingress
+    - Egress
+  ingress:
+    ### management port (8181) - kubelet probes (REQUIRED for liveness/readiness) ###
+    - action: Allow
+      protocol: TCP
+      source: {{ toYaml .Values.sinkAgent.calicoNetpol.managementRule | nindent 8 }}
+      destination:
+        ports:
+          - 8181
+    {{- if .Values.sinkAgent.calicoNetpol.prometheusRule }}
+    ### management port (8181) - prometheus metrics (opt-in) ###
+    - action: Allow
+      protocol: TCP
+      source: {{ toYaml .Values.sinkAgent.calicoNetpol.prometheusRule | nindent 8 }}
+      destination:
+        ports:
+          - 8181
+    {{- end }}
+  egress:
+    # allow to communicate to DNS pods
+    - action: Allow
+      protocol: UDP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    - action: Allow
+      protocol: TCP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    ### Traffic to the internet ###
+    - action: Allow
+      protocol: TCP
+      destination: {{ toYaml .Values.sinkAgent.calicoNetpol.outboundRule | nindent 8 }}
+    ### Traffic to Valkey ###
+    {{- if .Values.valkey.enabled }}
+    - action: Allow
+      protocol: TCP
+      destination:
+      {{- if and .Values.valkey.internal.enabled .Values.valkey.internal.calicoNetpol.enabled }}
+        selector: dplane == 'valkey'
+        namespaceSelector: projectcalico.org/name == '{{ .Release.Namespace }}'
+      {{- else if and .Values.valkey.external.enabled .Values.valkey.external.calicoNetpol.enabled }}
+        ports:
+          {{- include "dataplane.collectPorts" (dict "hosts" .Values.valkey.hosts "defaultPort" 6379) | trim | nindent 10 }}
+        {{- $rule := .Values.valkey.external.calicoNetpol.outboundRule }}
+        {{- if $rule.nets }}
+        nets:
+          {{- range $rule.nets }}
+          - {{ . }}
+          {{- end }}
+        {{- else if $rule.selector }}
+        selector: {{ $rule.selector }}
+        {{- else }}
+        namespaceSelector: projectcalico.org/name == '{{ .Release.Namespace }}'
+        {{- end }}
+      {{- end }}
+    {{- end }}
+{{- end }}

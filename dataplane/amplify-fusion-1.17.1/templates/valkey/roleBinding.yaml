@@ -1,0 +1,14 @@
+{{- if and (eq (include "valkey.internal.sa.enabled" .) "true") (not .Values.valkey.internal.serviceAccount.preexisting) }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ template "valkey.name" . }}-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ template "valkey.name" . }}-role
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.valkey.internal.serviceAccount.enabled | ternary .Values.valkey.internal.serviceAccount.name "default" }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

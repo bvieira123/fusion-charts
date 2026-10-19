@@ -1,0 +1,100 @@
+{{- if .Values.pepServer.calicoNetpol.enabled }}
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: {{ template "pep-server.appName" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  order: 10
+  selector: dplane == 'pep-server'
+  types:
+    - Ingress
+    - Egress
+  ingress:
+    ### traffic from ingress###
+    - action: Allow
+      protocol: TCP
+      source:
+        selector: dplane == 'envoy' || dplane == 'pep-server'
+        namespaceSelector: projectcalico.org/name == '{{ .Release.Namespace }}'
+      destination:
+        ports:
+          {{- range .Values.pepServer.service.ports }}
+          - {{ .targetPort }}
+          {{- end}}
+    ### management port (8181) - kubelet probes (REQUIRED for liveness/readiness) ###
+    - action: Allow
+      protocol: TCP
+      source: {{ toYaml .Values.pepServer.calicoNetpol.managementRule | nindent 8 }}
+      destination:
+        ports:
+          - 8181
+    {{- if .Values.pepServer.calicoNetpol.prometheusRule }}
+    ### management port (8181) - prometheus metrics (opt-in) ###
+    - action: Allow
+      protocol: TCP
+      source: {{ toYaml .Values.pepServer.calicoNetpol.prometheusRule | nindent 8 }}
+      destination:
+        ports:
+          - 8181
+    {{- end }}
+  egress:
+    # allow to communicate to DNS pods
+    - action: Allow
+      protocol: UDP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    - action: Allow
+      protocol: TCP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    ### Traffic to Valkey ###
+    {{- if .Values.valkey.enabled }}
+    - action: Allow
+      protocol: TCP
+      destination:
+      {{- if and .Values.valkey.internal.enabled .Values.valkey.internal.calicoNetpol.enabled }}
+        selector: dplane == 'valkey'
+        namespaceSelector: projectcalico.org/name == '{{ .Release.Namespace }}'
+      {{- else if and .Values.valkey.external.enabled .Values.valkey.external.calicoNetpol.enabled }}
+        ports:
+          {{- include "dataplane.collectPorts" (dict "hosts" .Values.valkey.hosts "defaultPort" 6379) | trim | nindent 10 }}
+        {{- $rule := .Values.valkey.external.calicoNetpol.outboundRule }}
+        {{- if $rule.nets }}
+        nets:
+          {{- range $rule.nets }}
+          - {{ . }}
+          {{- end }}
+        {{- else if $rule.selector }}
+        selector: {{ $rule.selector }}
+        {{- else }}
+        namespaceSelector: projectcalico.org/name == '{{ .Release.Namespace }}'
+        {{- end }}
+      {{- end }}
+    {{- end }}
+    ### Traffic to Fluent-Bit (OTLP traces) ###
+    {{- if and .Values.fluentBit.enabled .Values.common.openTelemetry.enabled }}
+    - action: Allow
+      protocol: TCP
+      destination:
+        selector: dplane == 'fluent-bit'
+        namespaceSelector: projectcalico.org/name == '{{ .Release.Namespace }}'
+        ports:
+          {{- if .Values.common.openTelemetry.exporter.grpc.enabled }}
+          - 4317
+          {{- end }}
+          {{- if .Values.common.openTelemetry.exporter.http.enabled }}
+          - 4318
+          {{- end }}
+    {{- end }}
+    ### Traffic to external endpoints (token introspection, OCSP) ###
+    {{- if .Values.pepServer.calicoNetpol.outboundRule }}
+    - action: Allow
+      protocol: TCP
+      destination: {{ toYaml .Values.pepServer.calicoNetpol.outboundRule | nindent 8 }}
+    {{- end }}
+{{- end }}

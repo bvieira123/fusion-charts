@@ -1,0 +1,3198 @@
+######################################
+##      Globals                     ##
+######################################
+
+global:
+  #image settings
+  image:
+    repository: docker.repository.axway.com/amplifyfusion-docker-prod
+    #pullPolicy the image pull policy
+    pullPolicy: IfNotPresent
+    # imagePullSecrets - secret that stores credentials for access to a registry for docker images
+    # This secret is the image pull secrets used by all the charts
+    # Use your Axway credentials if pulling from the Axway repository
+    # For a customer: create the secret:
+    #      REGISTRY_USERNAME= # credentials from your service account
+    #      REGISTRY_PASSWORD= # credentials from your service account
+    #      REGISTRY_SERVER=docker.repository.axway.com
+    #      kubectl create secret docker-registry ampint-docker-artifactory --docker-server="${REGISTRY_SERVER}" --docker-username="${REGISTRY_USERNAME}" --docker-password="${REGISTRY_PASSWORD}"
+    # When zerotrust.enabled=true and secrets are managed externally, the secret must also exist in the SPIRE namespace
+    # (setup.sh handles this automatically; for manual creation repeat the command with -n <spire-namespace>)
+    imagePullSecrets:
+      - name: ampint-docker-artifactory
+    # If dockerconfigjson is set it will create a docker-registry secret called ampint-docker-artifactory using that value
+    # in both the release namespace and the SPIRE namespace (when zerotrust.enabled=true)
+    # If secrets are being managed externally leave this value blank
+    createPullSecret:
+      dockerconfigjson: ""
+
+  # ref: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+  initContainers:
+    resources:
+      limits:
+        cpu: 100m
+        memory: 100Mi
+      requests:
+        cpu: 100m
+        memory: 100Mi
+
+  # unique identifier for your Fusion
+  appEnv: env
+
+  # Chose here the HOSTNAME for your Fusion:
+  external_domain: ""
+
+  # The domain name for your control plane. Only used when deploying a shared Fusion, in which case this must be set.
+  ctlplane_domain: ""
+  # Prefix for envoy loadbalancer domain name when deploying a shared Fusion i.e <shared_lb_prefix>.<external_domain>
+  shared_lb_prefix: "ha-lb"
+
+  # if multihost is enabled, hostnames will be a combination of prefix and external_domain
+  #    it will be: <multihost.listeners.tls.webhook.hostPrefix>.<external_domain> (for example here: apim.your-fusion-domain.com)
+  multihost:
+    enabled: false
+    listeners:
+      ssh:
+        port: 22
+        sftp:
+          enabled: true
+          hostPrefix: sftp-server
+      tls:
+        port: 443
+        https:
+          enabled: true
+          hostPrefix: https-server
+        webhook:
+          enabled: true
+          hostPrefix: webhook-server
+        api:
+          enabled: true
+          hostPrefix: api-server
+        api_mtls:
+          enabled: true
+          hostPrefix: api-mtls-server
+      tcp:
+        port: 80
+        http:
+          enabled: true
+          hostPrefix: http-server
+
+
+  # claimName a reference to the file share claim name
+  claimName: sharedstorage-claim
+  # volumeStorageName the volume name of the persistent fileshare
+  volumeStorageName: fileshare-storage
+  # clusterKey is obtained from the Control Plane User Interface
+  clusterKey: ""
+
+  nameOverride: ""
+  fullnameOverride: ""
+
+  alpinetools:
+    image:
+      name: 1.17/alpine-tools
+      tag: 1.5.2
+
+  # AWS region for all AWS-dependent features (encryption at rest, future Spiffe/Spire integration, etc.)
+  awsRegion: ""  # e.g. eu-west-1
+
+  # Encryption at Rest (EIPAAS-17841)
+  # InboundWorker and Orchestrator share the same CRK — they must use the same KMS key.
+  # AWS credentials must be provided via IRSA: add the IRSA role ARN to each component's
+  # serviceAccount.annotations: { eks.amazonaws.com/role-arn: <role-arn> }
+  # The IAM role must allow kms:Encrypt, kms:Decrypt, kms:DescribeKey on the key.
+  encryptAtRest:
+    kmsKeyArn: ""  # e.g. arn:aws:kms:eu-west-1:123456789012:key/mrk-abc123
+
+  #######################################
+  # Cloud KMS provider configuration    #
+  #######################################
+  # Declares which cloud KMS provider is available on this cluster.
+  # Components that require hardware-backed key storage read this to determine
+  # which provider to use and where to find its configuration.
+  #
+  # Options: none, aws
+  # none: No cloud KMS provider configured. Each component determines its own fallback behaviour.
+  # aws:  AWS KMS via IRSA. Recommended for EKS production deployments.
+  # @schema
+  # type: object
+  # properties:
+  #   type:
+  #     type: string
+  #     enum: [none, aws]
+  #     description: Cloud KMS provider available on this cluster. none means no cloud KMS is configured. aws uses AWS KMS via IRSA.
+  #   aws:
+  #     type: object
+  #     properties:
+  #       region:
+  #         type: string
+  #         description: AWS region where KMS keys will be created. Required when type is aws.
+  #       keyTags:
+  #         type: object
+  #         description: AWS tags applied to all KMS keys created by Fusion (billing/cost allocation).
+  # @schema
+  kms:
+    type: none
+
+    aws:
+      # AWS region where KMS keys will be created (required when type is aws).
+      region: ""
+
+      # Custom tags applied to all KMS keys created by Fusion (billing / cost allocation).
+      # Note: add kms:TagResource to the IRSA policy when keyTags are set.
+      keyTags: {}
+      # Authentication: IRSA only — no static credentials.
+      # Annotate each consuming component's ServiceAccount with its IAM role ARN.
+      # For example: See zerotrust.providers.spire.server.serviceAccount.annotations for setup steps.
+
+######################################
+##      Common Chart                ##
+######################################
+
+common:
+  # enabled means the common chart is enabled
+  enabled: true
+
+  ######################################
+  ##      Environment config          ##
+  ######################################
+
+  # Select here the emails targets for Fusion (for example for admin email notification)
+  admin_email: "" # for example: "myadminemail@example.com"
+  email_host: "" # Email host name -for example smtp.office365.com
+  email_port: "" #port number for example 587
+  email_username: ""
+  email_usetls: true
+  # set to true if email password is required
+  email_authentication: true
+  # email from address
+  email_frommailid: "" # eg myemail@example.com
+
+  ######################################
+  ##        General conditions        ##
+  ######################################
+
+  # acceptGeneralConditions In order to install Fusion, you need to set acceptGeneralConditions to "yes":
+  # You hereby accept that the Axway Products and/or Services shall be governed exclusively by the Axway General Terms and Conditions located at Axway General Conditions,
+  # https://www.axway.com/sites/default/files/Legal_documents/License_general_conditions/Axway_General_Conditions_version_april_2014_eng_(France).pdf
+  # unless an agreement has been signed with Axway in which case such agreement shall apply.
+  acceptGeneralConditions: "no"
+
+  ####################################################
+  ##   [optional] Certificate auto-generation       ##
+  ####################################################
+
+  certificate:
+    # The key reference to the cert in the domain-certificate secret. If using cert-manager, leave as 'keystore.p12'
+    # To create the required secret yourself run: `kubectl create secret generic domain-certificate --from-file=keystore.p12=/path/to/cert`
+    name: "keystore.p12"
+    enabled: true
+    # Set the password for your certificate, or leave empty and create 'certificate-password' secret external to helm deployment
+    # A password is needed whether you create the certificate yourself or generate the secret using the cert-manager feature below
+    # 'certificate-password' secret should have 1 data entry with the key 'password'
+    password: "" # base 64 encoded PKCS 12 password:     printf 'mystorepassword' | base64 -w 0
+    generate:
+      # Set generate.enabled to true if you have cert-manager configured and want to use it to generate and auto-renew your certificate
+      # warning: if cert-manager isn't installed already, the certificate CRD may not be exist yet, and your installation will be rejected
+      enabled: false
+      #duration that the cert is valid for
+      duration: 2190h # 3 months
+      #renewBefore cert will be renewed this time before expire date
+      renewBefore: 168h # 1 week
+      subject:
+        #optional organizations to be used on the certificate
+        organizations:
+          - fusion
+      issuerRef:
+        #name -the name of the ClusterIssuer resource in your environment
+        name: letsencrypt
+        kind: ClusterIssuer
+      # Always = generate a new private key on each renewal (best practice for TLS; HTTPS/mTLS
+      # clients re-validate via CA). NOTE: in single-key mode (ssh_certificate.enabled=false)
+      # the TLS key is also the SFTP host key, so Always rotates the SFTP host key and SFTP
+      # clients must update known_hosts — use separate-key mode + ssh_certificate to avoid this.
+      # One of: Always, Never.
+      rotationPolicy: "Always"
+
+  ####################################################
+  ##   [optional] SSH Certificate (separate key)    ##
+  ####################################################
+
+  #
+  # SFTP/SSH host-key provisioning has THREE modes:
+  #
+  #   MODE 1 — Shared key   (enabled: false — DEFAULT)
+  #     SFTP reuses the TLS 'domain-certificate' key as its SSH host key.
+  #     Simplest, but a TLS key rotation (certificate.generate.rotationPolicy: Always)
+  #     also rotates the SFTP host key and breaks SFTP clients' known_hosts.
+  #     All fields in this section are IGNORED.
+  #
+  #   MODE 2 — Separate key, cert-manager issued   (enabled: true, manually_created: false)
+  #     cert-manager issues a dedicated SSH key, independent of the TLS cert.
+  #     Requires cert-manager. The algorithm/keySize/rotationPeriod/renewBefore/
+  #     rotationPolicy fields below configure issuance.
+  #
+  #   MODE 3 — Separate key, operator-supplied   (enabled: true, manually_created: true)
+  #     You pre-create the 'ssh-domain-certificate' secret yourself; cert-manager is
+  #     NOT required and renders no Certificate CRD. The secret's 'keystore.p12' entry
+  #     may hold EITHER a PKCS12 keystore OR a raw ssh-keygen private key.
+  #     Supported algorithms (both formats): RSA >= 2048-bit, ECDSA P-256/384/521, and
+  #     Ed25519 — only DSA and *-sk (FIDO) keys are rejected at startup (use
+  #     'ssh-keygen -t rsa -b 4096', 'ssh-keygen -t ecdsa', or 'ssh-keygen -t ed25519').
+  #     The algorithm/keySize/rotationPeriod/renewBefore/rotationPolicy fields are IGNORED
+  #     in this mode (they only drive cert-manager issuance, which does not run here).
+  #
+  ssh_certificate:
+    # MODE 1 vs 2 vs 3 selector. false (default) = MODE 1 (shared TLS key).
+    enabled: false
+    # MODE 2 vs 3 selector (only when enabled: true). false = MODE 2 (cert-manager issues the key);
+    # true = MODE 3 (you pre-create the ssh-domain-certificate secret; cert-manager not required).
+    manually_created: false
+    # MODE 2 & MODE 3: keystore password (PKCS12) or passphrase (encrypted raw key).
+    # Leave empty for an unencrypted raw key; either way the 'ssh-certificate-password'
+    # secret must exist (pre-create it externally, key 'password', or set it here).
+    password: ""
+    # --- The following fields apply to MODE 2 only (cert-manager issuance);
+    # SSH cert (X.509 wrapper) duration / renewal cadence. Maximum 8760h (1 year).
+    # The SSH host key itself is not auto-rotated unless rotationPolicy is Always (see below).
+    rotationPeriod: "8760h"
+    # How early before expiry cert-manager renews the SSH cert. Must be < rotationPeriod.
+    # Consistent with the TLS cert default (168h).
+    renewBefore: "168h"
+    # SSH host key rotation policy. DEFAULT Never — SSH clients pin the host key
+    # (TOFU/known_hosts), so Always rotates the host key on renewal (~annually at 8760h)
+    # and breaks EVERY SFTP client until they update known_hosts. Only set Always if you
+    # have client-side known_hosts automation.
+    # One of: Always, Never.
+    rotationPolicy: "Never"
+    # SSH host key algorithm. One of RSA, ECDSA, Ed25519. RSA is the default for maximum
+    # compatibility with enterprise/legacy SFTP clients.
+    algorithm: "RSA"
+    # Key size in bits. Applies to RSA (2048/4096/8192) and ECDSA (256/384/521).
+    # Ignored for Ed25519 (fixed-size curve).
+    keySize: 4096
+    # cert-manager Issuer/ClusterIssuer for the SSH cert. Independent of
+    # common.certificate.generate.issuerRef (the TLS cert's issuer) — set separately if
+    # you want the SSH cert issued by a different issuer.
+    issuerRef:
+      #name -the name of the ClusterIssuer resource in your environment
+      name: letsencrypt
+      kind: ClusterIssuer
+
+  ####################################################
+  ##   [optional] domain-certificate Watch         ##
+  ####################################################
+
+  domainCertWatch:
+    enabled: false
+    # Schedule for running the log rotation job
+    schedule: "0 4 * * *" # runs every day at 4
+
+    nameOverride: ""
+
+    # service account config
+    serviceAccount:
+      enabled: true
+      preexisting: false
+      annotations: {}
+      name: domain-cert-watch
+
+    calicoNetpol:
+      enabled: false
+
+    securityContext:
+      # @schema
+      # type: [string, integer, null]
+      # @schema
+      runAsUser: 10010
+      # @schema
+      # type: [string, integer, null]
+      # @schema
+      runAsGroup: 10020
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      seccompProfile:
+        type: RuntimeDefault
+      capabilities:
+        drop:
+          - ALL
+
+    podSecurityContextEnabled: true
+
+    podSecurityContext:
+      supplementalGroups:
+        - 1001
+      # @schema
+      # type: [string, integer, null]
+      # @schema
+      fsGroup: 1001
+
+    #Number of seconds a job should live after it is finished.
+    job_ttl: "43200"
+
+  ######################################
+  ##           Secrets                ##
+  ######################################
+  # This block generates secrets that will be used by the other Helm charts
+  # ALL SECRETS HAVE TO BE ENCODED into base 64 (to avoid YAML issues):
+
+  # frommail secret settings
+  fromMail:
+    name: "frommail"
+    # set to true if managing secrets external to helm deployment
+    existingSecret: false
+    # Values if not using existing secret
+    # This secret allow Fusion to send emails from a valid email address that you control. Fill in with valid, preexisting credentials
+    password: "" # base 64 encoded credentials:     printf 'mypassword' | base64 -w 0
+
+  # datagrid-credentials secret settings - could be valkey or other inmemory db perhaps
+  datagridCredentials:
+    name: "datagrid-credentials"
+    # set to true if managing secrets external to helm deployment
+    existingSecret: false
+    # Values if not using existing secret
+    password: "YWRtaW4=" # base 64 encoded password
+
+  # cluster-details secret settings
+  clusterDetails:
+    name: "cluster-details"
+    # set to true if managing secrets external to helm deployment
+    existingSecret: false
+    # Values if not using existing secret
+    # If not deploying a shared Fusion, do not set. These will be retrieved from your clusterKey
+    # When deploying a shared Fusion, these values can be retrieved from your control plane.
+    jwtSecret: ""
+    clusterId: ""
+
+  ####################################################
+  ##   Persistence Setup
+  ####################################################
+
+  #common settings for persistence of data
+  persistence:
+    # claimRequestCapacity the claim's requested storage capacity size
+    claimRequestCapacity: 5Gi
+    # claimAccessMode the claim's mount access mode
+    claimAccessMode: ReadWriteMany
+    # volumeCapacity the volume's name
+    volumeName: shared-volume
+    # volumeCapacity the volume's storage capacity size
+    volumeCapacity: 5Gi
+    # volumeReclaimPolicy the volume's reclaim policy
+    volumeReclaimPolicy: Retain
+    # volumeAccessMode the volume's mount mode
+    volumeAccessMode: ReadWriteMany
+
+  ## Azure Files ##
+  azfiles:
+    enabled: false
+    ## Azure FileShare ##
+    #If you are using Azure FileShare, modify settings in here
+
+    resourceGroup: "" # where AKS cluster is installed eg prf01-ampint-ddp-rg01
+    storageAccountName: "" # Storage account name where file storage created eg prf02ampintddpsa01
+    storageClassName: "managed-csi" # Should be disk based storage eg managed-csi
+    fileshareName: "" # Name of your fileshare eg tst01ampintdd02afs01
+
+    # azurefs-secret this secret is used to get access to azure file system storage use storage account name and its key values.
+    # set existingSecret to true if managing secrets external to helm deployment
+    secretName: "azurefs-secret"
+    existingSecret: false
+    azureStorageAccountKey: ""   # Storage account key1 value base 64 encoded password to configure: printf 'password14' | base64 -w 0
+
+    # when using azure files for persistent volumes, with the SMB protocol, you may use this option to facilitate the upgrade
+    forceCloseHandles:
+      enabled: false
+      # Managed Identity must have the role "Storage File Data Privileged Contributor" (scope "storage", resource: your storage account)
+      vmssManagedIdentityClientId: ""
+
+  ## Amazon EFS ##
+  #If you are using Amazon EFS, modify settings in here
+  efs:
+    enabled: false # set it to true
+    #volumeHandle the volume handle name. Composition of EFS "file system id::access point id". example fs-xxxxxxxxx::fsap-xxxxxxxxx
+    volumeHandle: ""
+
+  ## Standard NFS ##
+  #If you are using Standard NFS, modify settings in here
+  nfs:
+    enabled: false # set it to true
+    staticPvc: false # if there is already NFS-server is ready, make this staticPvc false.
+    storageClassName: "" #provide the storageClassName
+    server: "" # example - fs-003ea2414e03f749d.efs.ap-south-1.amazonaws.com # put your nfs server info here
+    path: / # if you are not using / but a subdirectory, then make sure it already exists. Make sure gid 1001 is allowed to rw in that directory (e.g. perform a chown 1001:1001 . in your NFS)
+
+    # use csi or nfs depending on how you want to mount the volume directly as nfs or through the nfs csi driver
+    # if you use csi, make sure you have installed the csi driver:
+    #       helm repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
+    #       helm install csi-driver-nfs csi-driver-nfs/csi-driver-nfs --namespace kube-system --version v4.1.0
+    mode: csi
+    mountOptions:
+      - nfsvers=4.1 # put your mount options here, as a yaml list
+
+  ## GENERIC PVC ##
+  ## PVC and PV based on storage class only given by the K8S/OCP Administrator
+  pvc:
+    enabled: false
+    claimAccessMode: ReadWriteMany
+    claimRequestCapacity: ""
+    storageClass: ""
+
+  ######################################
+  ##      Environment                 ##
+  ######################################
+
+  #Environments properties
+  s3_payload: "false"
+  sftp_server_port: "2222"
+
+  #email details shared Fusion
+  support_email: ""
+
+  #Provide control plane information for clustering
+  clusterRefId: "{{ (eq .Values.global.clusterKey \"\") | ternary \"\" (printf \"%s\" (.Values.global.clusterKey | b64dec | fromJson).clusterRefId) }}"
+  truststore: truststore.jks
+  # Password for the mTLS partner-certificate truststore (server_truststore_password). Deliberately
+  # separate from certificate.password above: the truststore file persists across cert rotations, so
+  # this password must not rotate with the domain certificate. Leave empty to create the
+  # 'truststore-password' secret external to the helm deployment.
+  # 'truststore-password' secret should have 1 data entry with the key 'password'
+  #
+  # UPGRADE NOTE: this secret is new as of the chart version that introduced this value. On the
+  # first upgrade where 'truststore-password' does not yet exist and this is left empty, the chart
+  # auto-seeds it from the existing 'certificate-password' secret's current value (every
+  # environment prior to this change effectively used that value for the truststore too) — no
+  # manual action is required to upgrade. From that point on it is a fully independent secret:
+  # rotating certificate-password afterward will not affect it, and it is never re-seeded on
+  # subsequent upgrades. Set this value (or pre-create 'truststore-password') only if you want an
+  # explicit, different value from day one rather than inheriting certificate-password's current one.
+  truststorePassword: "" # base 64 encoded password:     printf 'mytruststorepassword' | base64 -w 0
+
+  # Set to true to manage ConfigMaps separately to the helm chart deployment
+  #### WARNING!! ####
+  # Values set in configMaps are critical to the functionality of the application
+  # Names and values must be consistent with what is expected
+  # If these are not managed correctly, the application may not work as intended
+  externalConfigMaps: false
+
+  # Set to false if we want a behavior where fluent bit daemon should tap to the log stream of the pods i.e. var/log/containers,
+  # we should make it false for our SAAS solution as fluent bit is allowed to run with root user permission.
+  # we kept default value as true for our custom managed solution where environments are restricted, and we rely on application file system logging instead of console logging and fluent bit setup.
+  logFileEnabled: true
+
+  # This setting controls the log output format.
+  # If 'true', logs are written in JSON format.
+  # If 'false', logs are written in plain text format.
+  logJsonEnabled: true
+
+  # OpenTelemetry settings
+  openTelemetry:
+    enabled: false # Set to true if we want to generate the traces
+    exporter:
+      log:
+        enabled: false # Set to true if we want to print traces to the logs in JSON format
+      grpc:
+        enabled: false # Set to true if we want to export traces using gRPC
+        endpoint: "{{ if .Values.fluentBit.enabled }}{{ include \"fluent-bit.urlScheme\" . }}://{{ include \"fluent-bit.appName\" . }}:4317{{ end }}"
+
+      http:
+        enabled: false # Set to true if we want to export traces using HTTP
+        endpoint: "{{ if .Values.fluentBit.enabled }}{{ include \"fluent-bit.urlScheme\" . }}://{{ include \"fluent-bit.appName\" . }}:4318/v1/traces{{ end }}"
+        # See grpc's external comment above — same auto-detection, resolved independently.
+
+######################################
+##      Envoy Chart               ##
+######################################
+
+envoy:
+  enabled: true
+
+  ######################################
+  ##      Image                       ##
+  ######################################
+
+  image:
+    name: 1.17/envoyproxy
+    tag: distroless-v1.38.0-axway-2
+
+  ######################################
+  ##      Service                     ##
+  ######################################
+
+  service:
+    type: LoadBalancer
+    ports:
+      - name: ssh
+        protocol: TCP
+        port: 9022
+        targetPort: 2222
+      - name: apim
+        protocol: TCP
+        port: 4443
+        targetPort: 4443
+      - name: apim-mtls
+        protocol: TCP
+        port: 5443
+        targetPort: 5443
+      - name: webhook
+        protocol: TCP
+        port: 443
+        targetPort: 8443
+      - name: https
+        protocol: TCP
+        port: 9443
+        targetPort: 9443
+      - name: http
+        protocol: TCP
+        port: 9080
+        targetPort: 9080
+      - name: websocket
+        protocol: TCP
+        port: 9085
+        targetPort: 9085
+
+  ######################################
+  ##   Routes - Openshift Specific    ##
+  ######################################
+
+  # In order to use routes multihost must first be enabled in the parent chart
+  # Enabling route will then create an openshift route for that traffic type using the multihost format.
+  #      This will be: <global.multihost.listeners.tls.webhook.hostPrefix>.<external_domain>.<external_domain>
+  #      (example: apim.your-fusion-domain.com)
+
+  route:
+    http:
+      enabled: false
+    https:
+      enabled: false
+    webhook:
+      enabled: false
+    api:
+      enabled: false
+    api_mtls:
+      enabled: false
+    sftp:
+      enabled: false
+
+  ######################################
+  ##      Probes                      ##
+  ######################################
+
+  # envoy startup probe
+  startupProbe:
+    httpGet:
+      path: /started
+      port: internal
+    failureThreshold: 180
+    periodSeconds: 1
+    initialDelaySeconds: 30
+    timeoutSeconds: 1
+    successThreshold: 1
+
+  # envoy liveness probe
+  livenessProbe:
+    httpGet:
+      path: /
+      port: admin
+    initialDelaySeconds: 60
+    periodSeconds: 120
+    timeoutSeconds: 30
+    failureThreshold: 3
+    successThreshold: 1
+
+  # envoy readiness probe
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: admin
+    initialDelaySeconds: 10
+    periodSeconds: 60
+    timeoutSeconds: 30
+    failureThreshold: 3
+    successThreshold: 1
+
+  # Time to wait for Kubernetes to propagate readiness failure and remove pod from service endpoints
+  preStopSleepSeconds: "40s"
+  # Total time k8s will allow for shutdown
+  terminationGracePeriodSeconds: 3600
+  # Maximum time to wait for draining Envoy - This value should be <= (terminationGracePeriodSeconds - preStopSleepSeconds)
+  maxDrainDurationSeconds: "3540s"
+  # Interval between shutdown assessment
+  gracefulShutdownPollIntervalSeconds: "5s"
+
+  ######################################
+  ##      Security                    ##
+  ######################################
+
+  podSecurityContextEnabled: true
+
+  podSecurityContext:
+    supplementalGroups:
+      - 1001
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    fsGroup: 1001
+
+  securityContext:
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    runAsUser: 10010
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    runAsGroup: 10020
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    seccompProfile:
+      type: RuntimeDefault
+    capabilities:
+      drop:
+        - ALL
+
+  #serviceaccount for envoy
+  serviceAccount:
+    enabled: true
+    # Use preexisting: true if you want to use a preexisting service account (e.g. created by the infra)
+    preexisting: false
+    annotations: {}
+    name: "envoy"
+    automountServiceAccountToken: true
+
+  podAnnotations: {}
+
+  ######################################
+  ##      Network Policies            ##
+  ######################################
+
+  calicoNetpol:
+    enabled: false
+    # reference the targets the envoy is allowed to reach
+    outboundRule:
+      # use this to reference a (preexisting) networkset
+      selector: role == 'any-address'
+      # or uncomment this to directly reference IP cidr instead
+      #nets:
+      #  - 0.0.0.0/0 # put your subnet cidre here
+    # reference the source IPs allowed into envoy
+    subnetEntityRule:
+      # use this to reference a (preexisting) networkset
+      selector: role == 'nodes-subnet-vpc-cidr'
+      # or uncomment this to directly reference IP cidr instead
+      #nets:
+      #  - 10.0.0.0/24 # put your subnet cidr here
+
+  ######################################
+  ##      Capacity/Affinity           ##
+  ######################################
+
+  replicaCount: 1
+  strategy:
+    type: "RollingUpdate"
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 500Mi
+    requests:
+      cpu: 500m
+      memory: 500Mi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 75
+    targetMemoryUtilizationPercentage: 75
+
+  podDisruptionBudget:
+    enabled: false
+    minPods: 1
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  files: {}
+  templates: {}
+
+  ######################################
+  ##      Environment                 ##
+  ######################################
+
+  # The proxy admin port is not externally accessible by default, override this to
+  # true in order to invoke the proxy admin APIs
+  exposeProxyAdminPort: false
+  # Override this if exposeProxyAdminPort=true and a different port is required for the proxy admin APIs.
+  proxyAdminPort: 9901
+
+  adminPorts:
+    admin:
+      containerPort: 9901
+      protocol: TCP
+    internal:
+      protocol: TCP
+      containerPort: 9902
+    drain:
+      protocol: TCP
+      containerPort: 9903
+
+  ports:
+    apim:
+      protocol: TCP
+      containerPort: 4443
+    apim-mtls:
+      protocol: TCP
+      containerPort: 5443
+    webhook:
+      protocol: TCP
+      containerPort: 8443
+    https:
+      protocol: TCP
+      containerPort: 9443
+    http:
+      protocol: TCP
+      containerPort: 9080
+    ssh:
+      protocol: TCP
+      containerPort: 2222
+
+  timeouts:
+    # Loadbalancer timeout higher than request to allow for clean closing of request.
+    loadbalancer: 3700
+    maxDuration: 3600s
+    idleTimeout: 3600s
+    connectTimeout: 15s
+
+  command:
+    - /usr/local/bin/envoy
+
+  argsTemplate: |-
+    - -l
+    - $(LOGLEVEL)
+    - -c
+    - /config/envoy.yaml
+    {{- if .Values.common.logJsonEnabled }}
+    - --log-format
+    - $(LOGFORMAT)
+    {{- end }}
+
+  logLevel: info
+  logFormat: '{"timestamp":"%Y-%m-%dT%T.%F","process_id":"%P","thread_id":"%t","level":"%l","loggerName":"%n","source_file":"%s","source_line":"%#","message":"%v"}'
+  ######################################
+  ##      Lifecycle                   ##
+  ######################################
+
+  lifecycle:
+    preStop:
+      httpGet:
+        path: /drain
+        port: drain
+        scheme: HTTP
+
+  ######################################
+  ##      Env   ##
+  ######################################
+  # Provide environment variables or override default application.properties
+  # Define key values in form of name and value, e.g.:
+  # env:
+  #   - name: LOG_LEVEL
+  #     value: DEBUG
+  # @schema
+  # type: array
+  # items:
+  #   oneOf:
+  #     - type: object
+  #       properties:
+  #         name:
+  #           type: string
+  #         value:
+  #           type: string
+  #       required: [name, value]
+  #       additionalProperties: false
+  #     - type: object
+  #       properties:
+  #         name:
+  #           type: string
+  #         valueFrom:
+  #           type: object
+  #       required: [name, valueFrom]
+  #       additionalProperties: false
+  # @schema
+  env: []
+
+######################################
+##      Inbound-Worker Chart        ##
+######################################
+
+inboundWorker:
+  enabled: true
+
+  ######################################
+  ##      Image                       ##
+  ######################################
+
+  image:
+    name: 1.17.1/inbound-worker
+    buildTag: 1.17.1
+
+  ######################################
+  ##      Service                     ##
+  ######################################
+
+  service:
+    type: ClusterIP
+    ports:
+      - name: internal
+        protocol: TCP
+        port: 8080
+        targetPort: 8080
+      - name: sse
+        protocol: TCP
+        port: 7080
+        targetPort: 7080
+      - name: openapi
+        protocol: TCP
+        port: 9080
+        targetPort: 9080
+      - name: ssh
+        protocol: TCP
+        port: 2222
+        targetPort: 2222
+      - name: service
+        protocol: TCP
+        port: 9443
+        targetPort: 9443
+
+  sftpService:
+    enabled: false
+    type: NodePort
+    ports:
+      - name: ssh
+        protocol: TCP
+        port: 9022
+        targetPort: 9022
+        nodePort: 32222
+
+
+  ######################################
+  ##      Persistence                 ##
+  ######################################
+  #EBS_hostPath
+  ebs_root: "/transaction-data"
+  txn_log_base_path: "/transaction-logs"
+
+  #EFS_Filesystem
+  efs_txn_log_path: "/efs/transaction-logs"
+
+  ######################################
+  ##      Probes                      ##
+  ######################################
+
+  #inbound worker startupProbe
+  startupProbe:
+    httpGet:
+      path: /q/health/started
+      port: management
+    initialDelaySeconds: 10
+    periodSeconds: 2
+    timeoutSeconds: 2
+    failureThreshold: 60
+    successThreshold: 1
+
+  #inbound worker livenessProbe
+  livenessProbe:
+    httpGet:
+      path: /q/health/live
+      port: management
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+
+  #inbound worker readinessProbe
+  readinessProbe:
+    httpGet:
+      path: /q/health/ready
+      port: management
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+
+  preStopSleepSeconds: "40s"
+  terminationGracePeriodSeconds: 3600
+
+  ######################################
+  ##      Security                    ##
+  ######################################
+
+  podSecurityContextEnabled: true
+
+  podSecurityContext:
+    supplementalGroups:
+      - 1001
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    fsGroup: 1001
+
+  securityContext:
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    runAsUser: 10010
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    runAsGroup: 10020
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    seccompProfile:
+      type: RuntimeDefault
+    capabilities:
+      drop:
+        - ALL
+
+  #serviceaccount for inbound-worker
+  serviceAccount:
+    enabled: true
+    # Use preexisting: true if you want to use a preexisting service account (e.g. created by the infra)
+    preexisting: false
+    annotations: {}
+    name: "inbound-worker"
+    automountServiceAccountToken: true
+
+  hostPath:
+    enabled: false
+
+  podAnnotations: {}
+
+  ######################################
+  ##      Network Policies            ##
+  ######################################
+
+  # Use the following block if you have Calico and want to use its network policies
+  # You will need the Calico API server to be installed as well
+  calicoNetpol:
+    enabled: false
+    # reference the targets the inbound-worker is allowed to reach
+    outboundRule: {}
+      # use this to reference a (preexisting) networkset
+      #selector: role == 'any-address'
+      # or uncomment this to directly reference IP cidr instead
+      #nets:
+      #  - 0.0.0.0/0 # put your subnet cidre here
+    # managementRule: source allowed to reach the management port (8181) for kubelet probes.
+    # Use a net (CIDR) covering the cluster node IP range, or a Calico selector.
+    # NOTE: leaving empty ({}) renders `source: {}` → port 8181 OPEN to all cluster traffic.
+    # Example:
+    #   managementRule:
+    #     nets:
+    #       - 10.0.0.0/16    # VPC CIDR containing all cluster nodes
+    managementRule: {}
+    # prometheusRule: Calico EntityRule selecting the Prometheus instance(s) allowed to scrape
+    # /q/metrics on port 8181. Empty ({}) = Prometheus blocked.
+    # Examples:
+    #   In-cluster Prometheus:
+    #     prometheusRule:
+    #       namespaceSelector: projectcalico.org/name == 'monitoring'
+    #   External Prometheus (VM, other cluster, SaaS):
+    #     prometheusRule:
+    #       nets:
+    #         - 192.168.10.42/32
+    #   Label-based:
+    #     prometheusRule:
+    #       selector: role == 'prometheus'
+    prometheusRule: {}
+
+  ######################################
+  ##      Capacity/Affinity           ##
+  ######################################
+
+  replicaCount: 1
+  strategy:
+    type: "RollingUpdate"
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 4000Mi
+    requests:
+      cpu: 500m
+      memory: 800Mi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 75
+    targetMemoryUtilizationPercentage: 75
+
+  podDisruptionBudget:
+    enabled: false
+    minPods: 1
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  ######################################
+  ##      Environment                 ##
+  ######################################
+
+  javaOpts: "-XX:+UseG1GC -XX:-G1PeriodicGCInvokesConcurrent -XX:G1PeriodicGCInterval=300000 -XX:MaxRAMPercentage=75"
+  # Date after which missed events will be rescheduled. Should be in Zulu time.
+  # The expected format is YYYY-MM-DDTHH:MMZ, for example "2025-11-13T12:00Z"
+  only_reschedule_missed_events_newer_than: ""
+  stale_process_interval: "30m"
+  QUARKUS_LOG_CONSOLE_LEVEL: "INFO"
+  max_payload_size_kbs: "50"
+  heartbeat_time_interval_sec: "300"
+  heartbeat_timeout_sec: "900"
+  leader_lease_duration: "6"
+  leader_lease_renew_period: "4"
+  leader_lease_retry_period: "1"
+  delegate_inoperative_pod_events_interval_sec: "2s"
+  enable_legacy_tls: "false"
+  # Mail trigger interval in seconds for inbound worker web socket connection failure
+  mailTriggerInterval: 300
+  datagrid_subscriptions_per_connection: 20               # Number of subscriptions allowed per connection in the Valkey client
+  datagrid_subscription_connection_pool_size: 100         # Size of the subscription connection pool in the Valkey client
+
+  #AWS Credentials
+  aws:
+    enabled: false
+    Access_Key: xxxxxxxxxxxx
+    Secret_Key: xxxxxxxxxxx
+    Region: xxxxxxxxxx
+
+  # Encryption at Rest (EIPAAS-17841)
+  # Requires global.encryptAtRest.kmsKeyArn and global.awsRegion to be set.
+  encryptAtRest:
+    enabled: false
+    kekDurationMinutes: 720        # CRYPTO_KEK_DURATION: lifetime of each KEK before rotation
+    dekDurationMinutes: 60         # CRYPTO_DEK_DURATION: lifetime of each in-memory DEK
+    kekRotationPercentage: 10      # CRYPTO_KEK_ROTATION_PERCENTAGE: rotation check runs at this % of KEK lifetime (1-99)
+    kekRotationIntervalMinutes: 0  # CRYPTO_KEK_ROTATION_INTERVAL: override rotation check interval (0 = derive from duration and percentage)
+
+  #SFTP and HTTPS Connections
+  sftp_enable: "true"
+  http_enable: "true"
+  https_enable: "true"
+  api_enable: "true"
+  api_mtls_enable: "true"
+
+  # Until mTLS enforcement is configured in Envoy we need to _not_ terminate TLS to avoid client cert prompt. (EIPAAS-4353)
+  http_tls_termination: "false"
+
+  nameOverride: ""
+  fullnameOverride: ""
+
+  #SAP dependencies configuration
+  sap_lib_directory: "false"
+  sap_enabled: false
+
+  # New salesforce event configuration
+  salesforce:
+    #  <host>{:<port>} Pub/Sub API Endpoint
+    #  default:  api.pubsub.salesforce.com  (port 443 or 7443)
+    pubsub_api_url: ""
+    # Retry configuration:
+    #  - initial backoff duration in ISO 8601 format
+    #  default: PT1M
+    retry_initial_backoff_duration: ""
+    #  - max backoff duration in ISO 8601 format
+    #  default: PT5M
+    retry_max_backoff_duration: ""
+    #  - Comma separated list of GRPC status codes to retry
+    #  default: INTERNAL,UNAVAILABLE,ABORTED,FAILED_PRECONDITION,RESOURCE_EXHAUSTED
+    retry_status_code_list: ""
+    # gRPC keepalive configuration:
+    #  - interval between HTTP/2 keepalive pings in seconds
+    #  default: 60
+    grpc_keepalive_time_seconds: ""
+    #  - timeout to wait for a keepalive ping response before closing the connection, in seconds
+    #  default: 10
+    grpc_keepalive_timeout_seconds: ""
+    # Idle stream watchdog:
+    #  - reconnect if no FetchResponse received for this many seconds (0 = disabled)
+    #  default: 300
+    idle_watchdog_threshold_seconds: ""
+
+  ######################################
+  ##      Env   ##
+  ######################################
+  # Provide environment variables or override default application.properties
+  # Define key values in form of name and value, e.g.:
+  # env:
+  #   - name: LOG_LEVEL
+  #     value: DEBUG
+  # @schema
+  # type: array
+  # items:
+  #   oneOf:
+  #     - type: object
+  #       properties:
+  #         name:
+  #           type: string
+  #         value:
+  #           type: string
+  #       required: [name, value]
+  #       additionalProperties: false
+  #     - type: object
+  #       properties:
+  #         name:
+  #           type: string
+  #         valueFrom:
+  #           type: object
+  #       required: [name, valueFrom]
+  #       additionalProperties: false
+  # @schema
+  env: []
+
+######################################
+##      Orchestrator Chart          ##
+######################################
+
+orchestrator:
+  enabled: true
+
+  ######################################
+  ##      Image                       ##
+  ######################################
+
+  image:
+    name: 1.17.1/orchestrator
+    buildTag: 1.17.1
+
+  ######################################
+  ##      Service                     ##
+  ######################################
+
+  service:
+    ports:
+      - name: internal
+        protocol: TCP
+        port: 1919
+        targetPort: 1919
+      - name: grpc-port
+        protocol: TCP
+        port: 50051
+        targetPort: 50051
+      - name: sse-port
+        protocol: TCP
+        port: 50052
+        targetPort: 50052
+      - name: websocket-port
+        protocol: TCP
+        port: 9085
+        targetPort: 9085
+
+
+  ######################################
+  ##      Persistence                 ##
+  ######################################
+  #EBS_hostPath
+  ebs_root: "/transaction-data"
+  txn_log_base_path: "/transaction-logs"
+
+  #EFS_Filesystem
+  efs_txn_log_path: "/efs/transaction-logs"
+
+  #JWT_TTL
+  jwtExpirationTimeout: 10
+
+  # NFS Connector config - disabled by default
+  connectors:
+    # NFS connector config
+    nfs:
+      # enable/disable NFS volumes mount
+      enabled: false
+      mode: csi
+      # Configure NFS volumes mounted into the orchestrator file system.
+      # Volumes are mounted under /connectors/nfs/<name>
+      volumes:
+        - name: "local-volume-name"
+          # server IP : sl1087339.aabc
+          server: "nfs-server"
+          # share path : /nf-op-buch
+          share: "nfs-server-share"
+          mountOptions: # put your mount options here, as a yaml list
+            - nfsvers=4.1
+
+  ######################################
+  ##      Probes                      ##
+  ######################################
+
+  #orchestrator startupProbe
+  startupProbe:
+    httpGet:
+      path: /q/health/started
+      port: management
+    initialDelaySeconds: 10
+    periodSeconds: 2
+    timeoutSeconds: 2
+    failureThreshold: 60
+    successThreshold: 1
+
+  #orchestrator readinessProbe
+  readinessProbe:
+    httpGet:
+      path: /q/health/ready
+      port: management
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 1
+    successThreshold: 1
+
+  #orchestrator livenessProbe
+  livenessProbe:
+    httpGet:
+      path: /q/health/live
+      port: management
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+
+  terminationGracePeriodSeconds: 3600
+  preStopSleepSeconds: "40s"
+
+  ######################################
+  ##      Security                    ##
+  ######################################
+
+  podSecurityContextEnabled: true
+
+  podSecurityContext:
+    supplementalGroups:
+      - 1001
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    fsGroup: 1001
+
+  securityContext:
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    runAsUser: 10010
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    runAsGroup: 10020
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    seccompProfile:
+      type: RuntimeDefault
+    capabilities:
+      drop:
+        - ALL
+
+  #serviceaccount for orchestrator
+  serviceAccount:
+    enabled: true
+    # Use preexisting: true if you want to use a preexisting service account (e.g. created by the infra)
+    preexisting: false
+    annotations: {}
+    name: "orchestrator"
+    automountServiceAccountToken: true
+
+  podAnnotations: {}
+
+  ######################################
+  ##      Network Policies            ##
+  ######################################
+
+  # Use the following block if you have Calico and want to use its network policies
+  # You will need the Calico API server to be installed as well
+  calicoNetpol:
+    enabled: false
+    # reference the targets the orchestrator is allowed to reach
+    outboundRule: {}
+      # use this to reference a (preexisting) networkset
+      #selector: role == 'any-address'
+      # or uncomment this to directly reference IP cidr instead
+      #nets:
+      #  - 0.0.0.0/0 # put your subnet cidr here
+    # managementRule: source allowed to reach the management port (8181) for kubelet probes.
+    # Use a net (CIDR) covering the cluster node IP range, or a Calico selector.
+    # NOTE: leaving empty ({}) renders `source: {}` → port 8181 OPEN to all cluster traffic.
+    # Example:
+    #   managementRule:
+    #     nets:
+    #       - 10.0.0.0/16    # VPC CIDR containing all cluster nodes
+    managementRule: {}
+    # prometheusRule: Calico EntityRule selecting the Prometheus instance(s) allowed to scrape
+    # /q/metrics on port 8181. Empty ({}) = Prometheus blocked.
+    # Examples:
+    #   In-cluster Prometheus:
+    #     prometheusRule:
+    #       namespaceSelector: projectcalico.org/name == 'monitoring'
+    #   External Prometheus (VM, other cluster, SaaS):
+    #     prometheusRule:
+    #       nets:
+    #         - 192.168.10.42/32
+    #   Label-based:
+    #     prometheusRule:
+    #       selector: role == 'prometheus'
+    prometheusRule: {}
+
+  ######################################
+  ##      Capacity/Affinity           ##
+  ######################################
+
+  replicaCount: 1
+  strategy:
+    type: "RollingUpdate"
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+
+  resources:
+    limits:
+      cpu: 1500m
+      memory: 4000Mi
+    requests:
+      cpu: 100m
+      memory: 1000Mi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 2
+    targetCPUUtilizationPercentage: 75
+    targetMemoryUtilizationPercentage: 75
+
+  podDisruptionBudget:
+    enabled: true
+    minPods: 1
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  ######################################
+  ##      Environment                 ##
+  ######################################
+
+  nameOverride: ""
+  fullnameOverride: ""
+
+  #JavaOpts and executions-limits
+  javaOpts: "-XX:+UseG1GC -XX:-G1PeriodicGCInvokesConcurrent -XX:G1PeriodicGCInterval=300000 -XX:MaxRAMPercentage=75 -Djdk.virtualThreadScheduler.parallelism=64"
+  enable_legacy_tls: false
+  # max_executions_limit number of parallel executions allowed
+  max_executions_limit: "20"
+  # critical_memory_buffer minimum amount of free memory (in MiB) available before orchestration can commence
+  critical_memory_buffer: "64"
+  throw_exception_on_fail: "false"
+  stale_process_interval: "30m"
+  QUARKUS_LOG_CONSOLE_LEVEL: "INFO"  # Console log level for inbound server and orchestrator
+  max_payload_size_kbs: "20"
+  heartbeat_time_interval_sec: "300"
+  heartbeat_timeout_sec: "900"
+  # websocket server settings
+  websocket_server:
+    enabled: false
+    port: 9085
+    orchestrator_port: 1919
+  #AWS Credentials
+  aws:
+    enabled: false
+    Access_Key: xxxxxxxxxxxx
+    Secret_Key: xxxxxxxxxxx
+    Region: xxxxxxxxxx
+
+  # Encryption at Rest (EIPAAS-17841)
+  # Requires global.encryptAtRest.kmsKeyArn and global.awsRegion to be set.
+  encryptAtRest:
+    enabled: false
+    kekDurationMinutes: 720        # CRYPTO_KEK_DURATION: lifetime of each KEK before rotation
+    dekDurationMinutes: 60         # CRYPTO_DEK_DURATION: lifetime of each in-memory DEK
+    kekRotationPercentage: 10      # CRYPTO_KEK_ROTATION_PERCENTAGE: rotation check runs at this % of KEK lifetime (1-99)
+    kekRotationIntervalMinutes: 0  # CRYPTO_KEK_ROTATION_INTERVAL: override rotation check interval (0 = derive from duration and percentage)
+
+  #cidr_range block internal ip ranges (format exanple )0.73.0.0/16,172.21.0.0/16
+  cidr_range: ""
+
+  #SAP dependencies configuration
+  sap_lib_directory: "false"
+  sap_enabled: false
+
+  hostPath:
+    enabled: false
+  ######################################
+  ##      Env   ##
+  ######################################
+  # Provide environment variables or override default application.properties
+  # Define key values in form of name and value, e.g.:
+  # env:
+  #   - name: quarkus.log.level
+  #     value: DEBUG
+  # @schema
+  # type: array
+  # items:
+  #   oneOf:
+  #     - type: object
+  #       properties:
+  #         name:
+  #           type: string
+  #         value:
+  #           type: string
+  #       required: [name, value]
+  #       additionalProperties: false
+  #     - type: object
+  #       properties:
+  #         name:
+  #           type: string
+  #         valueFrom:
+  #           type: object
+  #       required: [name, valueFrom]
+  #       additionalProperties: false
+  # @schema
+  env: [ ]
+
+######################################
+##      Operator Chart          ##
+######################################
+
+fusionOperator:
+  enabled: true
+
+  ######################################
+  ##      Image                       ##
+  ######################################
+
+  image:
+    name: 1.16/fusion-operator
+    buildTag: 1.2.1
+
+  #serviceaccount for operator
+  serviceAccount:
+    enabled: true
+    # Use preexisting: true if you want to use a preexisting service account (e.g. created by the infra)
+    preexisting: false
+    annotations: {}
+    name: "fusion-operator"
+    automountServiceAccountToken: true
+
+  job:
+    #serviceaccount for crd job
+    serviceAccount:
+      enabled: true
+      # Use preexisting: true if you want to use a preexisting service account (e.g. created by the infra)
+      preexisting: false
+      annotations: { }
+      name: "fusion-operator-job"
+      automountServiceAccountToken: true
+
+    removeJob_ttl: 3600
+    updateJob_ttl: 3600
+
+  ######################################
+  ##      Capacity/Affinity           ##
+  ######################################
+
+  replicaCount: 1
+  strategy:
+    type: "RollingUpdate"
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 2
+    targetCPUUtilizationPercentage: 75
+    targetMemoryUtilizationPercentage: 75
+
+  podAnnotations: {}
+
+  ######################################
+  ##      Probes                      ##
+  ######################################
+
+  # fusionOperator Liveness probe
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: 8081
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+    successThreshold: 1
+
+  # fusionOperator readinessProbe probe
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: 8081
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+    successThreshold: 1
+
+  # fusionOperator startupProbe probe
+  startupProbe:
+    httpGet:
+      path: /readyz
+      port: 8081
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 30
+    successThreshold: 1
+
+  ######################################
+  ##      Environment                 ##
+  ######################################
+
+  nameOverride: ""
+  fullnameOverride: ""
+
+
+  ######################################
+  ##      Security                    ##
+  ######################################
+  podSecurityContextEnabled: true
+  podSecurityContext:
+    supplementalGroups:
+      - 1001
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    fsGroup: 1001
+
+  securityContext:
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    runAsUser: 10010
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    runAsGroup: 10020
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    seccompProfile:
+      type: RuntimeDefault
+    capabilities:
+      drop:
+        - ALL
+
+  ######################################
+  ##      Leader Election             ##
+  ######################################
+
+  leaderElection:
+    enabled: true
+
+  ######################################
+  ##      Network Policies            ##
+  ######################################
+
+  # Use the following block if you have Calico and want to use its network policies
+  # You will need the Calico API server to be installed as well
+  calicoNetpol:
+    enabled: false
+    # reference the targets the fusion-operator is allowed to reach
+    outboundRule:
+      # use this to reference a (preexisting) networkset
+      selector: role == 'any-address'
+      ports:
+        - 443
+      # or uncomment this to directly reference IP cidr instead
+      #nets:
+      #  - 0.0.0.0/0 # put your subnet cidre here
+
+  ######################################
+  ##      Env   ##
+  ######################################
+  # Provide environment variables or override default application.properties
+  # Define key values in form of name and value, e.g.:
+  # env:
+  #   - name: LOG_LEVEL
+  #     value: DEBUG
+  # @schema
+  # type: array
+  # items:
+  #   oneOf:
+  #     - type: object
+  #       properties:
+  #         name:
+  #           type: string
+  #         value:
+  #           type: string
+  #       required: [name, value]
+  #       additionalProperties: false
+  #     - type: object
+  #       properties:
+  #         name:
+  #           type: string
+  #         valueFrom:
+  #           type: object
+  #       required: [name, valueFrom]
+  #       additionalProperties: false
+  # @schema
+  env: []
+
+######################################
+##           PEP Server             ##
+######################################
+
+pepServer:
+  enabled: true
+
+  ######################################
+  ##      Image                       ##
+  ######################################
+
+  image:
+    name: 1.17.1/pep-server
+    buildTag: 1.17.1
+
+  ######################################
+  ##      Service                     ##
+  ######################################
+
+  service:
+    type: ClusterIP
+    ports:
+      - name: xds
+        protocol: TCP
+        port: 9090
+        targetPort: 9090
+
+  ######################################
+  ##      Probes                      ##
+  ######################################
+
+  # pepServer: startupProbe
+  startupProbe:
+    httpGet:
+      path: /q/health/started
+      port: management
+    initialDelaySeconds: 0
+    periodSeconds: 2
+    timeoutSeconds: 2
+    failureThreshold: 60
+    successThreshold: 1
+
+  # pepServer: readinessProbe
+  readinessProbe:
+    httpGet:
+      path: /q/health/ready
+      port: management
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+
+  # pepServer: livenessProbe
+  livenessProbe:
+    httpGet:
+      path: /q/health/live
+      port: management
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+
+  preStopSleepSeconds: "40s"
+  terminationGracePeriodSeconds: 3600
+
+  ######################################
+  ##      OTel Exporter               ##
+  ######################################
+
+  otelExporter:
+    # Retry parameters — only effective when common.openTelemetry.enabled is true
+    retry:
+      maxAttempts: 3       # Maximum number of retry attempts on transient export failures (network errors, timeouts)
+      minBackoffMs: 200    # Initial backoff delay in milliseconds; doubles on each attempt (exponential backoff)
+      maxBackoffSeconds: 5 # Maximum backoff delay in seconds, regardless of the number of attempts
+
+  ######################################
+  ##      Security                    ##
+  ######################################
+
+  podSecurityContextEnabled: true
+
+  podSecurityContext:
+    supplementalGroups:
+      - 1001
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    fsGroup: 1001
+
+  securityContext:
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    runAsUser: 10010
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    runAsGroup: 10020
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    seccompProfile:
+      type: RuntimeDefault
+    capabilities:
+      drop:
+        - ALL
+
+  #serviceaccount for inbound-worker
+  serviceAccount:
+    enabled: true
+    # Use preexisting: true if you want to use a preexisting service account (e.g. created by the infra)
+    preexisting: false
+    annotations: {}
+    name: "pep-server"
+    automountServiceAccountToken: true
+
+  podAnnotations: {}
+
+  ######################################
+  ##      Network Policies            ##
+  ######################################
+
+  # Use the following block if you have Calico and want to use its network policies
+  # You will need the Calico API server to be installed as well
+  # If enabled then port 443 will be opened out for access to token introspection endpoints for okta users
+  calicoNetpol:
+    enabled: false
+    # reference the targets the pep-sesrver is allowed to reach
+    outboundRule:
+      #either any address or a specific ip address or range
+      selector: role == 'any-address'
+      # or uncomment this to directly reference IP cidr instead
+      #nets:
+      #  - 0.0.0.0/0 # put your subnet cidr range here
+      ports:
+        - 443
+    # managementRule: source allowed to reach the management port (8181) for kubelet probes.
+    # Use a net (CIDR) covering the cluster node IP range, or a Calico selector.
+    # NOTE: leaving empty ({}) renders `source: {}` → port 8181 OPEN to all cluster traffic.
+    # Example:
+    #   managementRule:
+    #     nets:
+    #       - 10.0.0.0/16    # VPC CIDR containing all cluster nodes
+    managementRule: {}
+    # prometheusRule: Calico EntityRule selecting the Prometheus instance(s) allowed to scrape
+    # /q/metrics on port 8181. Empty ({}) = Prometheus blocked.
+    # Examples:
+    #   In-cluster Prometheus:
+    #     prometheusRule:
+    #       namespaceSelector: projectcalico.org/name == 'monitoring'
+    #   External Prometheus (VM, other cluster, SaaS):
+    #     prometheusRule:
+    #       nets:
+    #         - 192.168.10.42/32
+    #   Label-based:
+    #     prometheusRule:
+    #       selector: role == 'prometheus'
+    prometheusRule: {}
+
+  ######################################
+  ##      Capacity/Affinity           ##
+  ######################################
+
+  replicaCount: 1
+  strategy:
+    type: "RollingUpdate"
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1000Mi
+    requests:
+      cpu: 500m
+      memory: 500Mi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 75
+    targetMemoryUtilizationPercentage: 75
+
+  podDisruptionBudget:
+    enabled: false
+    minPods: 1
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  ######################################
+  ##      Environment                 ##
+  ######################################
+
+  javaOpts: "-XX:+UseG1GC -XX:-G1PeriodicGCInvokesConcurrent -XX:G1PeriodicGCInterval=300000 -XX:MaxRAMPercentage=90"
+  QUARKUS_LOG_CONSOLE_LEVEL: "INFO"
+  extproc_background_cleanup_duration: "3000"
+  grpc_server_drain: "30"
+  idleTimeout: 3600s
+  extAuthzTimeout: 1000ms
+  nameOverride: ""
+  fullnameOverride: ""
+
+  ######################################
+  ##      Env   ##
+  ######################################
+  # Provide environment variables or override default application.properties
+  # Define key values in form of name and value, e.g.:
+  # env:
+  #   - name: quarkus.log.level
+  #     value: DEBUG
+  # @schema
+  # type: array
+  # items:
+  #   oneOf:
+  #     - type: object
+  #       properties:
+  #         name:
+  #           type: string
+  #         value:
+  #           type: string
+  #       required: [name, value]
+  #       additionalProperties: false
+  #     - type: object
+  #       properties:
+  #         name:
+  #           type: string
+  #         valueFrom:
+  #           type: object
+  #       required: [name, valueFrom]
+  #       additionalProperties: false
+  # @schema
+  env: []
+
+######################################
+##      Sink-Agent Chart        ##
+######################################
+
+sinkAgent:
+  enabled: true
+
+  image:
+    name: 1.17.1/sink-agent
+    buildTag: 1.17.1
+
+  ######################################
+  ##      Service                     ##
+  ######################################
+
+  ######################################
+  ##      Probes                      ##
+  ######################################
+  # sinkAgent: startupProbe
+  startupProbe:
+    httpGet:
+      path: /q/health/started
+      port: management
+    initialDelaySeconds: 0
+    periodSeconds: 2
+    timeoutSeconds: 2
+    failureThreshold: 60
+    successThreshold: 1
+
+  # sinkAgent: readinessProbe
+  readinessProbe:
+    httpGet:
+      path: /q/health/ready
+      port: management
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+
+  # sinkAgent: livenessProbe
+  livenessProbe:
+    httpGet:
+      path: /q/health/live
+      port: management
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+
+  # The sink-agent is a consumer (no inbound HTTP traffic via Service/Ingress); quarkus.shutdown.delay
+  # is hardcoded to 0 in application.properties so the ShutdownEvent fires immediately on SIGTERM.
+  # The drain budget for in-flight jobs at shutdown is:
+  #   drainBudget = terminationGracePeriodSeconds - 10s (Quarkus internal reserve)
+  # This budget covers the parallel job drain (audit + purge schedulers). It is set high (1h) as a
+  # ceiling so a large backlog of in-flight audit/purge work can drain fully before the pod is killed.
+  # The budget is an upper bound, not a fixed wait: the graceful-shutdown scheduler returns as soon as
+  # the in-flight jobs actually finish, so a normal shutdown (jobs idle or quick) terminates promptly
+  # and does not consume the full 1h.
+  # Hard floor: must be > 10s — at <= 10s the drain is bypassed entirely (executorService.shutdownNow()).
+  terminationGracePeriodSeconds: 3600
+
+  ######################################
+  ##      Security                    ##
+  ######################################
+
+  podSecurityContextEnabled: true
+
+  podSecurityContext:
+    supplementalGroups:
+      - 1001
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    fsGroup: 1001
+
+  securityContext:
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    runAsUser: 10010
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    runAsGroup: 10020
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    seccompProfile:
+      type: RuntimeDefault
+    capabilities:
+      drop:
+        - ALL
+
+  #serviceaccount for inbound-worker
+  serviceAccount:
+    enabled: true
+    # Use preexisting: true if you want to use a preexisting service account (e.g. created by the infra)
+    preexisting: false
+    annotations: {}
+    name: "sink-agent"
+    automountServiceAccountToken: true
+
+  podAnnotations: {}
+
+  ######################################
+  ##      Network Policies            ##
+  ######################################
+
+  # Use the following block if you have Calico and want to use its network policies
+  # You will need the Calico API server to be installed as well
+  calicoNetpol:
+    enabled: false
+    # reference the targets the sink-agent is allowed to reach
+    outboundRule: {}
+      # use this to reference a (preexisting) networkset
+      #selector: role == 'any-address'
+      # or uncomment this to directly reference IP cidr instead
+      #nets:
+      #  - 0.0.0.0/0 # put your subnet cidr here
+    # managementRule: source allowed to reach the management port (8181) for kubelet probes.
+    # Use a net (CIDR) covering the cluster node IP range, or a Calico selector.
+    # NOTE: leaving empty ({}) renders `source: {}` → port 8181 OPEN to all cluster traffic.
+    # Example:
+    #   managementRule:
+    #     nets:
+    #       - 10.0.0.0/16    # VPC CIDR containing all cluster nodes
+    managementRule: {}
+    # prometheusRule: Calico EntityRule selecting the Prometheus instance(s) allowed to scrape
+    # /q/metrics on port 8181. Empty ({}) = Prometheus blocked.
+    # Examples:
+    #   In-cluster Prometheus:
+    #     prometheusRule:
+    #       namespaceSelector: projectcalico.org/name == 'monitoring'
+    #   External Prometheus (VM, other cluster, SaaS):
+    #     prometheusRule:
+    #       nets:
+    #         - 192.168.10.42/32
+    #   Label-based:
+    #     prometheusRule:
+    #       selector: role == 'prometheus'
+    prometheusRule: {}
+
+  ######################################
+  ##      Capacity/Affinity           ##
+  ######################################
+  strategy:
+    type: "RollingUpdate"
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1000Mi
+    requests:
+      cpu: 500m
+      memory: 500Mi
+
+
+  podDisruptionBudget:
+    enabled: false
+    minPods: 1
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  ######################################
+  ##      Environment                 ##
+  ######################################
+  nameOverride: ""
+  fullnameOverride: ""
+
+  #Java_Opts
+  javaOpts: "-XX:+UseG1GC -XX:-G1PeriodicGCInvokesConcurrent -XX:G1PeriodicGCInterval=300000 -XX:MaxRAMPercentage=90"
+
+  ######################################
+  ## Retention Policy Configuration   ##
+  ######################################
+  # Default set to false
+  retention_job_purge_enabled: "true"
+  # Default set to 00:00 AM, and It is applicable only for MANAGED_SHARED Fusion
+  retention_job_purge_cron: "0 0 0 ? * * *"
+  # Mail trigger interval in seconds for sink agent web socket connection failure
+  mailTriggerInterval: 300
+
+  ######################################
+  ##      Env   ##
+  ######################################
+  # Provide environment variables or override default application.properties
+  # Define key values in form of name and value, e.g.:
+  # env:
+  #   - name: quarkus.log.level
+  #     value: DEBUG
+  # @schema
+  # type: array
+  # items:
+  #   oneOf:
+  #     - type: object
+  #       properties:
+  #         name:
+  #           type: string
+  #         value:
+  #           type: string
+  #       required: [name, value]
+  #       additionalProperties: false
+  #     - type: object
+  #       properties:
+  #         name:
+  #           type: string
+  #         valueFrom:
+  #           type: object
+  #       required: [name, valueFrom]
+  #       additionalProperties: false
+  # @schema
+  env: [ ]
+######################################
+##      Fluent-Bit Chart        ##
+######################################
+
+fluentBit:
+  enabled: false
+
+  # Default set to DaemonSet
+  # Possible Values : DaemonSet / Deployment
+  # Configure it as Deployment for environments where root permission is not allowed and Fluent-Bit is used only for offloading logs to other locations
+  kind: "DaemonSet"
+
+  # Set to false (default) to stop fluent-bit from writing application logs to EFS.
+  # Dynatrace now covers application-log observability, so the EFS copy fluent-bit
+  # was writing is redundant/costly for SAAS/Axway-Managed deployments.
+  # Customer-Managed on-prem deployments without Dynatrace should set this to true
+  # to preserve current behavior (application logs continue to be written to EFS).
+  # In fluent-bit DaemonSet mode, this flag gates the entire app-log pipeline --
+  # tailing, Kubernetes enrichment, parsing, and the final EFS write (the app-log
+  # INPUT/FILTER stanzas in configmap_daemonset.yaml plus handle_app_logs in
+  # configmap-luascript.yaml) -- not just the final write step.
+  # It has no effect on logFileEnabled's application-logger direct-write path,
+  # no effect at all when fluentBit.enabled is false, and no effect on fluent-bit
+  # Deployment mode (fluentBit.kind: Deployment), which still tails whatever
+  # app-log files exist under the EFS root (a graceful no-op once writes stop,
+  # per the chart's existing Ignore_Older/missing-file tailing behavior).
+  writeAppLogsToEfs: false
+
+  image:
+    name: 1.17/fluent-bit
+    buildTag: 5.0.6-axway-3
+
+  nameOverride: ""
+
+  podSecurityContextEnabled: true
+
+  podSecurityContext:
+    supplementalGroups:
+      - 1001
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    fsGroup: 1001
+
+
+  calicoNetpol:
+    enabled: false
+
+  hostNetwork: false
+
+  service:
+    ports:
+      - name: otlp-grpc
+        port: 4317
+        protocol: TCP
+        targetPort: 4317
+      - name: otlp-http
+        port: 4318
+        protocol: TCP
+        targetPort: 4318
+
+  config:
+    service: ""
+    inputs: ""
+    filters: ""
+    outputs: ""
+
+  existingConfigMap: ""
+
+  env: [ ]
+
+  envWithTpl: [ ]
+
+  extraContainers: [ ]
+
+  metricsPort: 2020
+
+  extraPorts: [ ]
+
+  extraVolumes: [ ]
+
+  extraVolumeMounts: [ ]
+
+  labels: { }
+
+  annotations: { }
+
+  podAnnotations: { }
+
+  podLabels: { }
+
+  # @schema
+  # type: integer
+  # @schema
+  minReadySeconds: 0
+
+  daemonSetVolumes:
+    - name: varlog
+      hostPath:
+        path: /var/log
+    - name: varlibdockercontainers
+      hostPath:
+        path: /var/lib/docker/containers
+    - name: etcmachineid
+      hostPath:
+        path: /etc/machine-id
+        type: File
+
+  daemonSetVolumeMounts:
+    - name: varlog
+      mountPath: /var/log
+    - name: varlibdockercontainers
+      mountPath: /var/lib/docker/containers
+      readOnly: true
+    - name: etcmachineid
+      mountPath: /etc/machine-id
+      readOnly: true
+
+  initContainers: []
+
+  envFrom: []
+
+  updateStrategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+    type: RollingUpdate
+
+  # fluentbit liveness probe
+  livenessProbe:
+    httpGet:
+      path: /
+      port: http
+      scheme: HTTP
+    periodSeconds: 30
+    successThreshold: 1
+    timeoutSeconds: 10
+    initialDelaySeconds: 60
+    failureThreshold: 3
+
+  # fluentbit readiness probe
+  readinessProbe:
+    httpGet:
+      path: /api/v1/health
+      port: http
+      scheme: HTTP
+    periodSeconds: 10
+    successThreshold: 1
+    timeoutSeconds: 5
+    initialDelaySeconds: 10
+    failureThreshold: 3
+
+  # fluentbit startup probe
+  startupProbe:
+    httpGet:
+      path: /api/v1/health
+      port: http
+      scheme: HTTP
+    periodSeconds: 10
+    successThreshold: 1
+    timeoutSeconds: 5
+    initialDelaySeconds: 30
+    failureThreshold: 3
+
+  resources:
+    limits:
+      cpu: 200m
+      memory: 512Mi
+    requests:
+        cpu: 200m
+        memory: 512Mi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 1
+    targetCPUUtilizationPercentage: 75
+    targetMemoryUtilizationPercentage: 75
+
+  podDisruptionBudget:
+    enabled: false
+    minPods: 1
+
+  dnsPolicy: ClusterFirst
+
+  restartPolicy: Always
+
+  schedulerName: default-scheduler
+
+  securityContext:
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    runAsUser: 10010
+    # @schema
+    # type: [string, integer, null]
+    # @schema
+    runAsGroup: 10020
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    seccompProfile:
+      type: RuntimeDefault
+    capabilities:
+      drop:
+        - ALL
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  serviceAccount:
+    enabled: true
+    preexisting: false
+    annotations: { }
+    name: fluent-bit
+
+  terminationGracePeriodSeconds: 30
+
+  ###################################
+  ##          logrotate            ##
+  ###################################
+  logrotate:
+    # Default set to false
+    # Enable or disable log rotation
+    # To be enabled only if fluent-bit is used as a DaemonSet to manage all logs
+    enabled: false
+    # Schedule for running the log rotation job
+    schedule: "*/5 * * * *" # runs every 5 minutes
+    # Retention policy for rotated logs
+    retention: -1 # keep all logs
+    # Minimum size of the log file before it gets rotated
+    size: 10M # rotate when log file reaches 10MB
+    # file suffix for rotated log files in date format
+    fileSuffix: .%Y-%m-%d-%H-%M # suffix for rotated log files
+
+    # service account config
+    serviceAccount:
+      enabled: true
+      preexisting: false
+      annotations: { }
+      name: logrotate
+
+    calicoNetpol:
+      enabled: false
+
+    securityContext:
+      # @schema
+      # type: [string, integer, null]
+      # @schema
+      runAsUser: 10010
+      # @schema
+      # type: [string, integer, null]
+      # @schema
+      runAsGroup: 10020
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      seccompProfile:
+        type: RuntimeDefault
+      capabilities:
+        drop:
+          - ALL
+
+    podSecurityContextEnabled: true
+
+    podSecurityContext:
+      supplementalGroups:
+        - 1001
+      # @schema
+      # type: [string, integer, null]
+      # @schema
+      fsGroup: 1001
+
+    #Number of seconds a job should live after it is finished.
+    job_ttl: "3600"
+
+######################################
+##             Valkey               ##
+######################################
+
+valkey:
+  enabled: true
+
+  client:
+    #deployment_model - clustered standalone or primary_replica
+    deployment_model: clustered
+    #subscription_mode - primary_only, replica_only - subscriptions to primary nodes only is default.
+    subscription_mode: primary_only
+    #read_mode - replica_first, primary_only, primary_and_replica - read from primary nodes only is default.
+    read_mode: primary_only
+    # security_mode controls how the Valkey client establishes connections:
+    #   NONE     - plaintext, no TLS (development/testing only)
+    #   ONLY_CA  - TLS, validates CA certificate only (no hostname check)
+    #   STRICT   - TLS, validates CA certificate and hostname (standard production TLS)
+    #   MTLS     - mutual TLS via SPIRE; falls back to STRICT when SPIRE is not active
+    # Leave empty to auto-select: MTLS when SPIRE is enabled, NONE otherwise
+    security_mode: ""
+
+    datagrid_username: default
+    datagrid_primary_connection_pool_min: 12           # Minimum number of connections maintained in the primary Valkey connection pool
+    datagrid_primary_connection_pool_max: 64           # Maximum number of connections allowed in the primary Valkey connection pool
+    datagrid_replica_connection_pool_min: 12           # Minimum number of connections maintained in the replica Valkey connection pool
+    datagrid_replica_connection_pool_max: 64           # Maximum number of connections allowed in the replica Valkey connection pool
+    datagrid_worker_threads: 32                        # Number of worker threads configured in the datagrid client
+    datagrid_idle_connection_timeout_millis: 30000     # Timeout in milliseconds before idle connections are closed (10 seconds)
+    datagrid_cluster_connect_timeout_millis: 10000     # Timeout in milliseconds for establishing cluster connections (10 seconds)
+    datagrid_response_timeout_millis: 20000            # Timeout in milliseconds for waiting on command responses (10 seconds)
+    datagrid_number_of_retries: 3                      # Number of retry attempts for failed operations before giving up
+    datagrid_retry_interval_millis: 5000               # Delay in milliseconds between retry attempts (5 seconds)
+
+    datagrid_subscriptions_per_connection: 5               # Number of subscriptions allowed per connection in the Valkey client
+    datagrid_subscription_connection_pool_size: 50         # Size of the subscription connection pool in the Valkey client
+    datagrid_subscription_connection_min_idle_size: 5      # Minimum idle connection pool size maintained in the subscription connections pool
+    datagrid_subscription_connection_timeout_millis: 7500  # Timeout in milliseconds for subscription connections (i.e 7.5 seconds)
+
+  hosts:
+    - hostname: valkey-headless
+      port: "6379"
+
+  external:
+    enabled: false
+    ######################################
+    ##      Network Policies            ##
+    ######################################
+
+    # Use the following block if you have Calico and want to use its network policies
+    # You will need the Calico API server to be installed as well
+    calicoNetpol:
+      enabled: false
+      outboundRule:
+        # use this to reference a (preexisting) networkset
+        selector: role == 'any-address'
+        # or uncomment this to directly reference IP cidr instead
+        #nets:
+        #  - 0.0.0.0/0 # put your subnet cidre here
+
+  internal:
+    enabled: true
+    ######################################
+    ##      Network Policies            ##
+    ######################################
+
+    # Use the following block if you have Calico and want to use its network policies
+    # You will need the Calico API server to be installed as well
+    calicoNetpol:
+      enabled: false
+
+    ######################################
+    ##      Cluster Configuration       ##
+    ######################################
+    clusterSize: 2                    # Total nodes in cluster (masters + replicas)
+    replicasPerMaster: 1              # Number of replicas per master
+
+
+    ######################################
+    ##      Image                       ##
+    ######################################
+
+    image:
+      name: 1.17/valkey
+      buildTag: 8.1.8-alpine3.23-axway-2
+
+    ######################################
+    ##      Environment                 ##
+    ######################################
+    #name overrides
+    nameOverride: ""
+    fullnameOverride: ""
+    #20 seconds (time before marking a node as failed)
+    clusterNodeTimeout: 20000
+    #Persistence storage folder
+    valkeyDir: /data
+    #Will return errors when memory limit reached instead of evicting keys
+    maxMemoryPolicy: noeviction
+
+    logLevel: notice
+    logFormat: logfmt
+    logTimeStampFormat: iso8601
+
+    ######################################
+    ##      Env                         ##
+    ######################################
+    # Provide environment variables or override default application.properties
+    # Define key values in form of name and value, e.g.:
+    # env:
+    #   - name: LOG_LEVEL
+    #     value: DEBUG
+    # @schema
+    # type: array
+    # items:
+    #   oneOf:
+    #     - type: object
+    #       properties:
+    #         name:
+    #           type: string
+    #         value:
+    #           type: string
+    #       required: [name, value]
+    #       additionalProperties: false
+    #     - type: object
+    #       properties:
+    #         name:
+    #           type: string
+    #         valueFrom:
+    #           type: object
+    #       required: [name, valueFrom]
+    #       additionalProperties: false
+    # @schema
+    env: [ ]
+
+    ######################################
+    ##      Persistence                 ##
+    ######################################
+    persistence:
+      #claimTemplateRequestStorage storage request size for the claim template
+      claimTemplateRequestStorage: 2Gi
+      #claimTemplateStorageClass class that will dynamically create storage on desired cloud platform
+      #For AWS set this value to gp3
+      #For Azure set this value to managed-csi
+      claimTemplateStorageClass: ""
+      #claimTemplateName name of the claim for valkey storage
+      claimTemplateName: valkey-data
+      #claimTemplateAccessModes access mode for claim template
+      claimTemplateAccessModes: ReadWriteOnce
+      #Append-only file logging is on for durability - set to "no" to disable
+      appendonly: "yes"
+      # RDB snapshotting configuration
+      # Don't define or set rdbSnapshots to empty array [] to disable RDB snapshots entirely
+      # Each entry defines: save after X seconds if at least Y keys changed
+      rdbSnapshots:
+        - seconds: 900
+          keyChanges: 1
+        - seconds: 300
+          keyChanges: 10
+        - seconds: 60
+          keyChanges: 10000
+
+    ######################################
+    ##      Probes                      ##
+    ######################################
+    startupProbe:
+      enabled: true
+      initialDelaySeconds: 10
+      periodSeconds: 15
+      timeoutSeconds: 12
+      successThreshold: 1
+      failureThreshold: 20
+
+    livenessProbe:
+      enabled: true
+      initialDelaySeconds: 30
+      periodSeconds: 30
+      timeoutSeconds: 5
+      successThreshold: 1
+      failureThreshold: 3
+
+    readinessProbe:
+      enabled: true
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 5
+      successThreshold: 1
+      failureThreshold: 3
+
+    terminationGracePeriodSeconds: 120
+
+    ######################################
+    ##      Security                    ##
+    ######################################
+
+    podSecurityContextEnabled: true
+
+    podSecurityContext:
+      supplementalGroups:
+        - 1001
+      # @schema
+      # type: [string, integer, null]
+      # @schema
+      fsGroup: 1001
+
+    securityContext:
+      # @schema
+      # type: [string, integer, null]
+      # @schema
+      runAsUser: 10010
+      # @schema
+      # type: [string, integer, null]
+      # @schema
+      runAsGroup: 10020
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      seccompProfile:
+        type: RuntimeDefault
+      capabilities:
+        drop:
+          - ALL
+
+    #serviceaccount for valkey
+    serviceAccount:
+      enabled: true
+      # Use preexisting: true if you want to use a preexisting service account (e.g. created by the infra)
+      preexisting: false
+      annotations: { }
+      name: "valkey"
+      automountServiceAccountToken: true
+
+    podAnnotations: { }
+
+    podDisruptionBudget:
+      enabled: true
+      maxUnavailable: 1
+
+    resources:
+      limits:
+        cpu: 4000m
+        memory: 16Gi
+      requests:
+        cpu: 4000m
+        memory: 16Gi
+
+
+    nodeSelector: { }
+    tolerations: [ ]
+    affinity: { }
+
+#################################################
+# Zero-trust activation
+#################################################
+# Zero-trust is gated by `zerotrust.enabled`. When true, the chart deploys the configured
+# identity provider and injects workload-identity material into the dataplane components.
+zerotrust:
+  # @schema
+  # default: false
+  # type: boolean
+  # description: If true, activate zero-trust and deploy the configured identity provider for the data plane components.
+  # @schema
+  enabled: false
+
+  # provider selects which identity provider implementation to deploy.
+  # @schema
+  # enum: [spire]
+  # description: Workload identity provider implementation.
+  # @schema
+  provider: spire
+
+  # managedLabel is the Kubernetes label key stamped on every dataplane Pod managed by the
+  # active zero-trust provider.
+  managedLabel: zerotrust.axway/managed
+
+  ################################################
+  ##  Provider-specific configuration          ##
+  ################################################
+  # Configuration consumed by the provider selected via `zerotrust.provider`.
+  providers:
+    spire:
+      # namespace is the Kubernetes namespace where SPIRE server and agent resources are installed.
+      # All dataplanes in the same cluster share this single SPIRE installation.
+      namespace: spire
+
+      # preexisting controls whether SPIRE resources are created by this release.
+      # Set to false (default) for the first dataplane install — SPIRE resources will be created.
+      # Set to true for any subsequent dataplane install in the same cluster — SPIRE resources
+      # already exist and this release will only deploy the dataplane components.
+      # @schema
+      # default: false
+      # type: boolean
+      # description: If true, skip creating SPIRE resources — they already exist from a prior dataplane install in this cluster.
+      # @schema
+      preexisting: false
+
+      # dataplaneLabel is the Kubernetes label key stamped on dataplane namespaces and read by the
+      # spire-registrar to discover which namespaces to watch. Both the namespace hook and the
+      # registrar sidecar use this value — changing it here keeps them in sync.
+      dataplaneLabel: "zerotrust.axway/dataplane"
+
+      # labelNamespaceHook controls whether a pre-install Job is deployed to label the dataplane
+      # namespace with <dataplaneLabel>=true. Set to false on clusters where the hook
+      # pod cannot reach the Kubernetes API server (e.g. EKS with strict Gatekeeper/network policies).
+      # When disabled, label the namespace manually before install:
+      #   kubectl label namespace <namespace> <dataplaneLabel>=true --overwrite
+      labelNamespaceHook:
+        enabled: true
+        calicoNetpol:
+          # Enable on clusters with Calico global network policies that block hook pod egress
+          # (e.g. EKS with restrictive Calico policies). Allows hook pod to reach the Kubernetes API server.
+          enabled: false
+
+      # Must be unique per cluster to prevent identity collisions.
+      clusterName: amplify-fusion-cluster
+
+      # The trust domain for SPIRE install.
+      trustDomain: zerotrust.internal
+
+      caSubject:
+        # Country for SPIRE server CA
+        country: US
+        # Organization for SPIRE server CA
+        organization: Internal
+        # Common Name for SPIRE server CA
+        commonName: zerotrust-ca.internal
+
+      ################################################
+      ##  Workload identity delivery               ##
+      ################################################
+      # How SPIRE delivers identity material to workload pods (Workload API on a Unix domain
+      # socket via hostPath). A file-based or sidecar-based provider would have a completely
+      # different shape here.
+      workload:
+        # socketPath: in-container path the spire-agent listens on.
+        socketPath: /run/spire/sockets/spire-agent.sock
+        # socketHostPath: directory on the node where the Workload API socket lives.
+        socketHostPath: /run/spire/sockets
+        # volumeName: Kubernetes volume name for the hostPath mount injected into dataplane pods.
+        volumeName: workload-identity-socket
+        # mountPath: in-pod path read by the Java SDK and Envoy. Must match what those clients expect.
+        mountPath: /spire-agent-sockets
+        # waitInitContainer: gate dataplane Pod start until the agent socket is healthy.
+        waitInitContainer:
+          enabled: true
+
+      ################################################
+      ##  SPIRE Tools                              ##
+      ################################################
+      # spire-tools is the helper image (wait-for-agent.sh, spire-cert-refresh.sh) bundled with
+      # the chart. Used as an init container by most dataplane components, and as a sidecar by
+      # components that need PEM files on disk (e.g. fluent-bit).
+      tools:
+        image:
+          name: 1.17/spire-tools
+          buildTag: "1.15.1-axway-2"
+        agentReadiness:
+          timeoutSeconds: 120
+        certRefresh:
+          checkIntervalSeconds: 60
+          renewBeforeExpirySeconds: 300
+        # securityContext applied to the wait-for-workload-identity init container.
+        # Matches the hardened defaults the dataplane components use.
+        securityContext:
+          runAsUser: 10010
+          runAsGroup: 10020
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop:
+              - ALL
+        resources:
+          requests:
+            cpu: 1m
+            memory: 48Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+
+      ################################################
+      ##  SPIRE Server                             ##
+      ################################################
+      server:
+        enabled: true
+        ################################################
+        ##  SPIFFE/SPIRE trust anchor                ##
+        ################################################
+        # @schema
+        # type: string
+        # pattern: "^[1-9][0-9]*(m|h)$"
+        # examples: [120m,12h]
+        # description: TTL for spire-agent's own node SVID (default_x509_svid_ttl). Governs how long the agent can keep operating on a cached credential while spire-server is unreachable — keep this comfortably longer than any expected spire-server outage or rolling-upgrade window. Also the fallback TTL for workload entries when registrar.workloadSvidTTL is unset. Only minute/hour Go-duration units are accepted, and the value must be greater than zero.
+        # @schema
+        agentSvidTTL: 12h
+
+        # @schema
+        # type: string
+        # pattern: "^[1-9][0-9]*(m|h)$"
+        # examples: [24h,168h]
+        # description: Intermediate CA TTL for the SPIRE server. Only minute/hour Go-duration units are accepted, and the value must be greater than zero.
+        # @schema
+        caTTL: 168h
+        nameOverride: ""
+        fullnameOverride: "spire-server"
+        image:
+          name: 1.17/spire-server
+          buildTag: "1.15.1"
+        serviceAccount:
+          enabled: true
+          preexisting: false
+          # annotations — add the IRSA role ARN here when global.kms.type is aws.
+          # IRSA lets the spire-server pod call AWS KMS without static credentials.
+          # The IAM role must have KMS permissions.
+          # Example:
+          #   annotations:
+          #     eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID:role/spire-server-kms"
+          annotations: {}
+          name: "spire-server"
+          # Disable the default automounted token — the statefulset uses an explicit projected
+          # token with a 1-hour expiry replacing the default unlimited token for k8s API calls.
+          automountServiceAccountToken: false
+        # bundleConfigMapName is the ConfigMap the k8sbundle notifier writes the SPIRE CA bundle into.
+        # The agent mounts this ConfigMap as its trust anchor (trust_bundle_path).
+        bundleConfigMapName: "spire-bundle"
+        persistence:
+          size: 1Gi
+          storageClass: ""
+        podSecurityContextEnabled: true
+        podSecurityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+          supplementalGroups: [1000]
+          seccompProfile:
+            type: RuntimeDefault
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop:
+              - ALL
+        podAnnotations: {}
+        calicoNetpol:
+          # @schema
+          # default: false
+          # type: boolean
+          # description: If true, deploy a Calico NetworkPolicy for spire-server. Requires the Calico CNI to be installed.
+          # @schema
+          enabled: false
+          # inboundRule: source rule for spire-agent traffic on port 8081.
+          # IMPORTANT: spire-agent uses hostNetwork:true — connections arrive from the NODE IP, not the
+          # pod IP. A pod selector won't work. Use a net (CIDR) covering the cluster node IP range.
+          # Example:
+          #   inboundRule:
+          #     nets:
+          #       - 10.0.0.0/16    # VPC CIDR containing all cluster nodes
+          inboundRule: {}
+          # outboundRule: optional destination rule for external egress (e.g. AWS KMS endpoint).
+          # DNS (port 53) and the Kubernetes API are always allowed and do not need to be included here.
+          # Example for AWS KMS:
+          #   outboundRule:
+          #     nets:
+          #       - 0.0.0.0/0      # or narrow to kms.<region>.amazonaws.com IP ranges
+          outboundRule: {}
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /live
+            port: healthz
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          timeoutSeconds: 1
+          failureThreshold: 3
+          successThreshold: 1
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: healthz
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 1
+          failureThreshold: 3
+          successThreshold: 1
+        nodeSelector: {}
+        tolerations: []
+        affinity: {}
+
+        ################################################
+        ##  SPIRE KeyManager configuration           ##
+        ################################################
+        # @schema
+        # type: object
+        # properties:
+        #   type:
+        #     type: string
+        #     enum: [disk, aws, memory]
+        #     description: How spire-server stores its CA private key. disk for dev/RKE2, aws for EKS production, memory for ephemeral use with UpstreamAuthority.
+        #   keyIdentifier:
+        #     type: object
+        #     properties:
+        #       type:
+        #         type: string
+        #         enum: [file, value]
+        #         description: How spire-server tracks its KMS key. file lets SPIRE create and manage the key; value references a pre-existing key ARN or alias.
+        #       value:
+        #         type: string
+        #         description: KMS key ARN or alias. Required when keyIdentifier.type is value; ignored when file.
+        # @schema
+        keyManager:
+          # type controls how spire-server stores its CA private key.
+          # disk:   plaintext JSON on PVC (/run/spire/data/keys.json).
+          #         No cloud KMS required. Use global.kms.type: none.
+          #         SECURITY: the PVC must be backed by an encrypted StorageClass.
+          # aws:    CA key generated and stored in AWS KMS HSM — never written to disk.
+          #         Requires global.kms.type: aws and global.kms.aws.region.
+          #         Requires IRSA role ARN in zerotrust.providers.spire.server.serviceAccount.annotations.
+          # memory: CA key stored in RAM only — lost on pod restart, SPIRE re-generates on startup.
+          #         Only safe when upstreamAuthority.type is not none — the upstream re-signs the
+          #         new intermediate on each restart. No PVC or KMS required.
+          type: disk    # disk | aws | memory
+          keyIdentifier:
+            # Only relevant when type is aws. Controls how spire-server tracks its KMS key.
+            # file:  SPIRE creates the KMS key on first run and persists the ARN to
+            #        /run/spire/data/kms-key-id. Pod restarts reuse the same key.
+            #        Default — prevents key accumulation on restart.
+            # value: Use a pre-existing KMS key ARN or alias (e.g. compliance-mandated key).
+            #        SPIRE will not create a new key.
+            type: file    # file | value
+            value: ""     # required when type is value; ignored when type is file
+
+        # upstreamAuthority controls whether SPIRE chains its CA to an external root CA.
+        # When type is none (default), SPIRE is a self-signed root CA.
+        # When set, SPIRE becomes an intermediate CA — its certificate is signed by the upstream.
+        #
+        # type options:
+        #   none:        SPIRE self-signed root CA. No external dependency. Default.
+        #   disk:        Root CA cert + key loaded from a Kubernetes Secret mounted into the pod.
+        #                The customer pre-creates the Secret. The chart mounts it read-only.
+        #                Use for on-prem when an existing CA cert/key is available.
+        #   certManager: SPIRE submits a CertificateRequest to cert-manager. cert-manager signs
+        #                it using the configured Issuer. Requires cert-manager installed in cluster.
+        #                Use for on-prem when cert-manager manages the customer PKI.
+        #   awsPca:      SPIRE submits a CSR to AWS Private Certificate Authority.
+        #                Requires IRSA and an existing ACM PCA. Use for AWS environments where
+        #                the customer requires certs to chain to their AWS-native PKI.
+        # @schema
+        # type: object
+        # properties:
+        #   type:
+        #     type: string
+        #     enum: [none, disk, certManager, awsPca]
+        #     description: UpstreamAuthority plugin type.
+        #   disk:
+        #     type: object
+        #     properties:
+        #       secretName:
+        #         type: string
+        #         description: Name of the Kubernetes Secret containing cert (tls.crt) and key (tls.key).
+        #   certManager:
+        #     type: object
+        #     properties:
+        #       namespace:
+        #         type: string
+        #       issuerName:
+        #         type: string
+        #       issuerKind:
+        #         type: string
+        #         enum: [Issuer, ClusterIssuer]
+        #       issuerGroup:
+        #         type: string
+        #   awsPca:
+        #     type: object
+        #     properties:
+        #       region:
+        #         type: string
+        #       certificateAuthorityArn:
+        #         type: string
+        # @schema
+        upstreamAuthority:
+          type: none    # none | disk | certManager | awsPca
+
+          # disk: mount a Kubernetes Secret containing the root CA cert and key.
+          # The Secret must be pre-created in the spire namespace before install.
+          # Required keys in Secret: tls.crt (CA certificate PEM), tls.key (CA private key PEM)
+          # Example: kubectl create secret tls spire-upstream-ca -n spire \
+          #            --cert=ca.crt --key=ca.key
+          disk:
+            secretName: ""    # name of the Secret in the spire namespace
+
+          # certManager: SPIRE submits a CertificateRequest to a cert-manager Issuer.
+          # cert-manager must be installed and the Issuer must exist before SPIRE starts.
+          certManager:
+            namespace: ""           # namespace where CertificateRequests are created
+            issuerName: ""          # cert-manager Issuer or ClusterIssuer name
+            issuerKind: Issuer      # Issuer | ClusterIssuer
+            issuerGroup: cert-manager.io   # cert-manager API group; change only if using a custom Issuer controller
+
+            # createBootstrapCA: when true the chart creates a self-signed Certificate (isCA=true)
+            # and a CA ClusterIssuer named "spire-upstream-ca" that SPIRE can use.
+            # Set issuerName to "spire-upstream-ca" and issuerKind to ClusterIssuer when using this.
+            createBootstrapCA: false
+            bootstrapCA:
+              namespace: cert-manager               # namespace where cert-manager is installed
+              commonName: zerotrust-ca.internal     # commonName for the self-signed CA certificate
+              secretName: spire-upstream-ca-secret  # Secret where the CA cert/key are stored
+              # bootstrapIssuerName: the ClusterIssuer used to sign the bootstrap CA certificate.
+              # If createSelfSignedIssuer is true the chart creates a SelfSigned ClusterIssuer with this name.
+              # If createSelfSignedIssuer is false a ClusterIssuer with this name must already exist.
+              bootstrapIssuerName: selfsigned
+              bootstrapIssuerGroup: cert-manager.io
+              # createSelfSignedIssuer: when true the chart also creates a SelfSigned ClusterIssuer
+              # named by bootstrapIssuerName. Set to false if one already exists in the cluster.
+              createSelfSignedIssuer: false
+              privateKey:
+                algorithm: ECDSA
+                size: 256
+
+          # awsPca: SPIRE submits a CSR to AWS Private Certificate Authority.
+          # Requires IRSA role ARN in zerotrust.providers.spire.server.serviceAccount.annotations with
+          # acm-pca:IssueCertificate, acm-pca:GetCertificate, acm-pca:DescribeCertificateAuthority.
+          awsPca:
+            region: ""                      # AWS region of the ACM PCA
+            certificateAuthorityArn: ""     # ARN of the ACM PCA
+
+        ################################################
+        ##  SPIRE Registrar configuration (sidecar)  ##
+        ################################################
+        registrar:
+          image:
+            name: 1.17/spire-k8s-registrar
+            buildTag: "1.0.7"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
+          # watchNamespaces: optional comma-separated list of namespaces for the registrar to watch.
+          # When empty (default), the registrar watches all non-system namespaces — the correct
+          # mode for multi-dataplane clusters where the registrar is shared across installs.
+          watchNamespaces: ""
+          # informerSyncTimeoutSeconds: how long (in seconds) the registrar waits for the Kubernetes
+          # namespace or pod informer to complete its initial LIST sync before falling back to a
+          # direct API call (for namespace informer) or continuing with a WARN (for pod informer).
+          # Must be > 0. Default 60s accommodates cold JVM startup (TLS handshake + classloading).
+          informerSyncTimeoutSeconds: 60
+          # reconcileIntervalSeconds: how often (in seconds) the registrar runs a full reconcile
+          # pass to heal missed events or orphan entries. Set to 0 to disable periodic reconcile.
+          # Disabling periodic reconciliation is NOT recommended.
+          reconcileIntervalSeconds: 300
+          # healthPort: the port on which the registrar exposes /live and /ready probes.
+          # Must not conflict with spire-server ports (8080 healthz, 8081 gRPC).
+          healthPort: 8090
+          # @schema
+          # type: string
+          # pattern: "^([1-9][0-9]*(m|h))?$"
+          # examples: [30m,12h]
+          # description: Optional per-entry TTL override for workload SPIRE entries (valkey, orchestrator, pep-server, inbound-worker, sink-agent, envoy). Defaults to 8h — shorter than agentSvidTTL (12h) so workload cert rotation is tightened out of the box, without affecting spire-agent's own node SVID lifetime or platform resilience to a spire-server outage. Set to "" to fall back to agentSvidTTL entirely, or to any other Go-duration string (minutes/hours only, greater than zero) to override the default.
+          # @schema
+          workloadSvidTTL: "8h"
+          # livenessInitialDelaySeconds: startup grace period (seconds) before the registrar's
+          # liveness probe begins evaluating. Accounts for cold JVM startup (TLS handshake +
+          # classloading). Default 30 was validated during live deploy-verify (Amendment 5).
+          livenessInitialDelaySeconds: 30
+          # livenessPeriodSeconds / livenessFailureThreshold: liveness probe cadence and
+          # restart-trigger threshold for the registrar container.
+          livenessPeriodSeconds: 20
+          livenessFailureThreshold: 3
+          # readinessInitialDelaySeconds / readinessPeriodSeconds / readinessFailureThreshold:
+          # readiness probe timing for the registrar container.
+          readinessInitialDelaySeconds: 10
+          readinessPeriodSeconds: 10
+          readinessFailureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+
+      ################################################
+      ##  SPIRE Agent                              ##
+      ################################################
+      agent:
+        enabled: true
+        nameOverride: ""
+        fullnameOverride: "spire-agent"
+        image:
+          name: 1.17/spire-agent
+          buildTag: "1.15.1"
+        serviceAccount:
+          enabled: true
+          preexisting: false
+          annotations: {}
+          name: "spire-agent"
+          automountServiceAccountToken: false
+        podSecurityContextEnabled: true
+        podSecurityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+          supplementalGroups: [1000]
+          seccompProfile:
+            type: RuntimeDefault
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop:
+              - ALL
+        podAnnotations: {}
+        healthPort: 8088
+        calicoNetpol:
+          # @schema
+          # default: false
+          # type: boolean
+          # description: If true, deploy a Calico NetworkPolicy for spire-agent. Requires the Calico CNI to be installed.
+          # @schema
+          enabled: false
+          # outboundRule: destination rule for traffic to spire-server (ports 8081 gRPC and 8080 health).
+          # DNS (port 53) and the Kubernetes API are always allowed and do not need to be included here.
+          # Example for a ClusterIP service (CIDR covering the cluster service range):
+          #   outboundRule:
+          #     nets:
+          #       - 10.96.0.0/12   # cluster service CIDR containing the spire-server ClusterIP
+          outboundRule: {}
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        livenessProbe:
+          httpGet:
+            path: /live
+            port: healthz
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          timeoutSeconds: 1
+          failureThreshold: 3
+          successThreshold: 1
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: healthz
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 1
+          failureThreshold: 3
+          successThreshold: 1
+        nodeSelector: {}
+        tolerations: []
+        affinity: {}
+        workloadAttestors:
+          k8s:
+            verification:
+              # Controls how the SPIRE agent verifies the kubelet TLS certificate.
+              # apiServerCA: use the cluster CA (kube-root-ca.crt) — works for EKS and most managed k8s
+              #              distributions where kubelet certs are signed by the cluster CA.
+              # hostCert:    mount a CA cert from the host node filesystem (required for distributions
+              #              that use a separate kubelet CA, e.g. RKE2). Set hostPath accordingly.
+              # skip:        disable verification entirely — not recommended for production.
+              # @schema
+              # enum: [apiServerCA, hostCert, skip]
+              # description: How spire-agent verifies the kubelet TLS certificate. apiServerCA for EKS/GKE/AKS, hostCert for RKE2/k3s, skip not recommended.
+              # @schema
+              type: apiServerCA
+              # hostPath on the node to the CA cert that signed the kubelet serving certificate.
+              # Only used when type is "hostCert".
+              hostPath: ""
+

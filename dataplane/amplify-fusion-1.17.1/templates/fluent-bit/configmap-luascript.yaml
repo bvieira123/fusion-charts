@@ -1,0 +1,226 @@
+{{- if and .Values.fluentBit.enabled (eq .Values.fluentBit.kind "DaemonSet") -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "fluent-bit.appName" . }}-luascript
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fluent-bit.labels" . | nindent 4 }}
+data:
+  create_runtime_Directories.lua: |
+    -- Extract MDC fields to root level for JSON logs
+    local function extract_mdc_fields(record)
+      if record["mdc"] and type(record["mdc"]) == "table" then
+          for key, value in pairs(record["mdc"]) do
+              record[key] = value
+          end
+      end
+      return record
+    end
+
+    -- Check if mdc contains transactionId
+    local function is_transaction_log(record)
+      if record["mdc"] and type(record["mdc"]) == "table" then
+          if record["mdc"]["transactionId"] then
+              return true
+          end
+      end
+      return false
+    end
+
+    -- Simple JSON encoder function
+    local function escape_json_string(str)
+      if type(str) ~= "string" then
+        return tostring(str)
+      end
+
+      local escaped = str:gsub('\\', '\\\\')
+                         :gsub('"', '\\"')
+                         :gsub('\n', '\\n')
+                         :gsub('\r', '\\r')
+                         :gsub('\t', '\\t')
+      return escaped
+    end
+
+    -- TODO - Current valkey version doesn't support JSON formatting, when we will upgrade version, we will revisit this.
+    -- Convert into JSON string representation
+    local function to_json(val)
+      local t = type(val)
+      if t == "nil" then
+        return "null"
+      elseif t == "boolean" then
+        return tostring(val)
+      elseif t == "number" then
+        return tostring(val)
+      elseif t == "string" then
+        return '"' .. escape_json_string(val) .. '"'
+      elseif t == "table" then
+        local is_array = false
+        local max_index = 0
+        local count = 0
+        for k, v in pairs(val) do
+          count = count + 1
+          if type(k) == "number" and k > 0 and math.floor(k) == k then
+            max_index = math.max(max_index, k)
+          end
+        end
+        is_array = (max_index == count)
+        if is_array then
+          local result = {}
+          for i = 1, max_index do
+            table.insert(result, to_json(val[i]))
+          end
+          return "[" .. table.concat(result, ",") .. "]"
+        else
+          local result = {}
+          for k, v in pairs(val) do
+            if type(k) == "string" then
+              table.insert(result, '"' .. escape_json_string(k) .. '":' .. to_json(v))
+            end
+          end
+          return "{" .. table.concat(result, ",") .. "}"
+        end
+      else
+        return '""'
+      end
+    end
+
+    local function resolve_folder_path(folder_path, file_name)
+      if file_name == "inbound.log" then
+          folder_path = folder_path .. "/inbound"
+      end
+      return folder_path
+    end
+
+    local function write_log(folder_path, file_name, log_content)
+      local file_path = folder_path .. "/" .. file_name
+      local file, err = io.open(file_path, "a")
+      if file then
+          -- Write log content to the file
+          file:write(log_content .. "\n")
+          file:close()
+          print(string.format("Successfully wrote log to file: %s", file_path))
+      else
+          print(string.format("Failed to open file: %s, error: %s", file_path, err))
+      end
+    end
+
+    local function handle_txn_logs(tag, timestamp, record, file_name)
+      local logJsonEnabled = os.getenv("log_json_enabled") or "false"
+
+      -- For JSON logs, check if mdc has transactionId and extract fields
+      if logJsonEnabled == "true" then
+          if not is_transaction_log(record) then
+              return 1, timestamp, record
+          end
+          record = extract_mdc_fields(record)
+      end
+
+      local orgId = record["orgSchema"]
+      local modeId = record["modeId"]
+      local transactionId = record["transactionId"]
+      local log_content = record["log"]
+
+      if not orgId or not modeId then
+          print("Skipping directory creation: orgId or modeId is nil")
+          return 1, timestamp, record
+      end
+
+      local efs_root = os.getenv("efs_root")
+      print(string.format("efs root value...: %s", efs_root))
+      local folder_path = string.format("%s/logs/%s/%s/transaction/%s", efs_root, orgId, modeId, transactionId)
+      folder_path = resolve_folder_path(folder_path, file_name)
+
+      local success, exit_type, exit_code = os.execute("mkdir -p " .. folder_path)
+
+      if success then
+          write_log(folder_path, file_name, log_content)
+      else
+          print(string.format("Failed to create folder: %s", folder_path))
+      end
+      return 1, timestamp, record
+    end
+
+    local function handle_app_logs(tag, timestamp, record, dir_name, file_name)
+      local log_content = record["log"]
+      local log_json_enabled = os.getenv("log_json_enabled")
+      local write_app_logs_to_efs = os.getenv("write_app_logs_to_efs") or "false"
+
+      if file_name == "valkey.log" and log_json_enabled == "true" then
+          -- Fields to exclude from JSON output
+          local exclude_fields = {
+              log = true,
+              kubernetes = true,
+              stream = true,
+              time = true,
+              _p = true
+          }
+
+          -- Remove unwanted fields before converting to JSON
+          local clean_record = {}
+          for k, v in pairs(record) do
+              if not exclude_fields[k] then
+                  clean_record[k] = v
+              end
+          end
+
+          -- Convert the cleaned record to JSON string for valkey logs
+          log_content = to_json(clean_record)
+      end
+      local pod_name = record["kubernetes"]["pod_name"]
+      print(string.format("pod name...: %s", pod_name))
+
+      local efs_root = os.getenv("efs_root")
+      print(string.format("efs root value...: %s", efs_root))
+      local folder_path = string.format("%s/logs/%s/%s", efs_root, dir_name, pod_name)
+      folder_path = resolve_folder_path(folder_path, file_name)
+
+      if write_app_logs_to_efs == "true" then
+          write_log(folder_path, file_name, log_content)
+      else
+          print(string.format("Skipping EFS app-log write (write_app_logs_to_efs=false) for: %s", folder_path))
+      end
+
+      return 1, timestamp, record
+    end
+
+    function handle_orchestrator_txn_logs(tag, timestamp, record)
+      return handle_txn_logs(tag, timestamp, record, "ir.log")
+    end
+
+    function handle_inbound_txn_logs(tag, timestamp, record)
+      return handle_txn_logs(tag, timestamp, record, "inbound.log")
+    end
+
+    function handle_fusion_operator_logs(tag, timestamp, record)
+      return handle_app_logs(tag, timestamp, record, "fusion-operator", "fusion-operator.log")
+    end
+
+    function handle_envoy_logs(tag, timestamp, record)
+      return handle_app_logs(tag, timestamp, record, "envoy", "envoy.log")
+    end
+
+    function handle_orchestrator_logs(tag, timestamp, record)
+      return handle_app_logs(tag, timestamp, record, "ir", "orchestrator.log")
+    end
+
+    function handle_inbound_logs(tag, timestamp, record)
+      return handle_app_logs(tag, timestamp, record, "inbound", "inbound.log")
+    end
+
+    function handle_pep_server_logs(tag, timestamp, record)
+      return handle_app_logs(tag, timestamp, record, "pep-server", "pep-server.log")
+    end
+
+    function handle_sink_agent_logs(tag, timestamp, record)
+      return handle_app_logs(tag, timestamp, record, "sinkagent", "sinkagent.log")
+    end
+
+  {{- if (include "valkey.internal.enabled" .) }}
+
+    function handle_valkey_logs(tag, timestamp, record)
+      return handle_app_logs(tag, timestamp, record, "valkey", "valkey.log")
+    end
+  {{- end }}
+
+{{- end }}

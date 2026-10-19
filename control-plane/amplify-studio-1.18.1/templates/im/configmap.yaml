@@ -1,0 +1,21 @@
+{{- if eq .Values.externalConfigMaps false }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "im.appName" . }}
+  namespace: {{ .Release.Namespace }}
+data:
+  auth_url: "http://{{ template "api.appName" . }}:{{ .Values.ports.apiAuthPort }}/api"
+  spring_datasource_url: jdbc:postgresql://{{ .Values.database.endpoint }}/{{ .Values.database.name }}
+  hazelcast_server_ip: {{ template "hazelcast.appName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  environment: {{ .Values.appEnv }}
+  default_currency_code: {{ .Values.default_currency_code }}
+  domain: {{ .Values.external_domain }}
+  singleTenantMode: "{{ .Values.singleTenantMode | default false }}"
+  JAVA_OPTS: {{ .Values.im.xms_xmx }}
+  tenant_namespace: "{{ .Release.Namespace }}"
+  report_batch_size: "{{ .Values.im.report_batch_size }}"
+  report_and_purge_job_enabled: "{{ .Values.im.report_and_purge_job_enabled }}"
+  report_and_purge_job_cron: "{{ .Values.im.report_and_purge_job_cron }}"
+  jdbc_connection_max_pool_size: "{{ .Values.im.database.maxPoolSize }}"
+{{- end }}

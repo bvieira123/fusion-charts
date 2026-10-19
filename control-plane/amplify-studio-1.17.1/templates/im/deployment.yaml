@@ -1,0 +1,132 @@
+{{- if .Values.im.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ template "im.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "im.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.im.autoscaling.enabled }}
+  replicas: {{ .Values.im.replicaCount }}
+  {{- end }}
+  minReadySeconds: 60
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ .Values.im.maxSurge }}
+      maxUnavailable: {{ .Values.im.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "im.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.im.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "im.selectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.im.terminationGracePeriodSeconds }}
+      {{- with .Values.global.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.im.serviceAccount.enabled }}
+      serviceAccountName: {{ include "im.serviceAccountName" . }}
+      {{- end }}
+      {{- with .Values.im.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      dnsConfig:
+        options:
+          - name: use-vc
+      initContainers:
+        - name: wait-predeploy
+          securityContext:
+            {{- toYaml .Values.im.securityContext | nindent 12 }}
+          image: "{{ default .Values.global.image.repository .Values.global.alpinetools.image.repository }}/{{ .Values.global.alpinetools.image.name }}:{{ .Values.global.alpinetools.image.buildTag }}"
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          command:
+            - "/bin/sh"
+            - "-c"
+            - >
+              sleep 4;
+              if [[ "$(kubectl get pod --no-headers -o custom-columns=":metadata.name" --selector=ampint.ctlplane==master-schema-job)" != "" ]];
+              then until kubectl wait --for=condition=complete --timeout=0 job/$(kubectl get job --no-headers -o custom-columns=":metadata.name" --selector=ampint.ctlplane==master-schema-job);
+              do echo "waiting for predeploy job to complete"; sleep 30; done; else echo "Predeploy not running" exit; fi
+          {{- with .Values.global.initContainers.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      containers:
+        - name: {{ template "im.appName" . }}
+          securityContext:
+            {{- toYaml .Values.im.securityContext | nindent 12 }}
+          image: "{{ default .Values.global.image.repository .Values.im.image.repository }}/{{ .Values.im.image.name }}:{{ .Values.im.image.buildTag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          envFrom:
+            {{- if and .Values.im.UsageReporting .Values.im.UsageReporting.enabled }}
+            - secretRef:
+                name: {{ .Values.common.chimeraUsageReporting.name }}
+             {{- end }}
+            {{- if .Values.common.authentication.enabled }}
+            - secretRef:
+                name: {{ .Values.common.emailPassword.name }}
+            {{- end }}
+            - secretRef:
+                name: {{ .Values.common.postgresCredentials.name }}
+            - secretRef:
+                name: {{ .Values.common.mongoDB.name }}
+            {{- if .Values.im.ClusterSecretKey.enabled }}
+            - secretRef:
+                name: {{ .Values.common.clusterDetails.name }}
+            {{- end }}
+            - configMapRef:
+                name: {{ template "im.appName" . }}
+            - configMapRef:
+                name: {{ .Values.global.commonConfigmap }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          {{- with .Values.im.env }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - containerPort: 9080
+              name: http
+            - containerPort: 8181
+              name: management
+          resources:
+            {{- toYaml .Values.im.resources | nindent 12 }}
+          volumeMounts:
+            - name: {{ .Values.global.volumeMounts.name }}
+              mountPath: /efs
+            - name: tmpdir
+              mountPath: /tmp
+          livenessProbe: {{- toYaml .Values.im.livenessProbe | nindent 12 }}
+          startupProbe: {{- toYaml .Values.im.startupProbe | nindent 12 }}
+          readinessProbe: {{- toYaml .Values.im.readinessProbe | nindent 12 }}
+      volumes:
+      - name: tmpdir
+        emptyDir: {}
+      - name: {{ .Values.global.volumeMounts.name }}
+        persistentVolumeClaim:
+          claimName: {{ .Values.global.persistentVolumeClaim.claimName }}
+      {{- with .Values.im.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.im.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.im.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

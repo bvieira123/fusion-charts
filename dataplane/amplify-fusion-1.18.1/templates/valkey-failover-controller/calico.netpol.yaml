@@ -1,0 +1,51 @@
+{{- if and (eq (include "valkey.internal.subQuorumFailoverRequired" .) "true") .Values.valkey.internal.failoverController.calicoNetpol.enabled }}
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: {{ template "valkeyFailoverController.appName" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  order: 10
+  selector: dplane == 'valkey-failover-controller'
+  types:
+    - Ingress
+    - Egress
+  ingress:
+    ### management port (9000) - kubelet probes (REQUIRED for liveness/readiness) ###
+    - action: Allow
+      protocol: TCP
+      source: {{ toYaml .Values.valkey.internal.failoverController.calicoNetpol.managementRule | nindent 8 }}
+      destination:
+        ports:
+          - 9000
+  egress:
+    # allow to communicate to DNS pods
+    - action: Allow
+      protocol: UDP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    - action: Allow
+      protocol: TCP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    # allow to communicate with k8s api server (leader election Lease, STONITH pod delete)
+    - action: Allow
+      destination:
+        services:
+          name: kubernetes
+          namespace: default
+      protocol: TCP
+    ### Traffic to Valkey (health checks, CLUSTER FAILOVER TAKEOVER) ###
+    - action: Allow
+      protocol: TCP
+      destination:
+        selector: dplane == 'valkey'
+        namespaceSelector: projectcalico.org/name == '{{ .Release.Namespace }}'
+        ports:
+          - 6379
+          - 16379
+{{- end }}

@@ -1,0 +1,15 @@
+{{- if .Values.storage.efs.enabled -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Namespace }}-{{ .Values.storage.claimName }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - {{ .Values.storage.persistence.claimAccessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.persistence.claimRequestCapacity }}
+  volumeMode: Filesystem
+  volumeName: {{ .Release.Namespace }}-{{ .Values.storage.persistence.volumeName }}
+{{- end -}}

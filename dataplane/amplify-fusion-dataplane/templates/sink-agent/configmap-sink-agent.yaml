@@ -1,0 +1,14 @@
+{{- if eq .Values.externalConfigMaps false }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "sink-agent.appName" . }}
+  namespace: {{ .Release.Namespace }}
+data:
+  environment: "{{ .Values.appEnv }}"
+  JAVA_OPTS: "{{ .Values.sinkAgent.javaOpts }}"
+  TERMINATION_GRACE_PERIOD_SECS: "{{ .Values.sinkAgent.terminationGracePeriodSeconds }}"
+  retention_job_purge_enabled: "{{ .Values.sinkAgent.retention_job_purge_enabled }}"
+  retention_job_purge_cron: "{{ .Values.sinkAgent.retention_job_purge_cron }}"
+  mailTriggerInterval: "{{ .Values.sinkAgent.mailTriggerInterval }}"
+{{- end }}

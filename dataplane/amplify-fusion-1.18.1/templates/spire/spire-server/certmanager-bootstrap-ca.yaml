@@ -1,0 +1,51 @@
+{{- $certMgr := .Values.zerotrust.providers.spire.server.upstreamAuthority.certManager }}
+{{- if and .Values.zerotrust.enabled
+          (not .Values.zerotrust.providers.spire.preexisting)
+          (eq .Values.zerotrust.providers.spire.server.upstreamAuthority.type "certManager")
+          $certMgr.createBootstrapCA }}
+{{- if $certMgr.bootstrapCA.createSelfSignedIssuer }}
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: {{ $certMgr.bootstrapCA.bootstrapIssuerName }}
+  annotations:
+    {{ include "spire.keepAnnotation" . | nindent 4 }}
+  labels:
+    {{ include "spire-server.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+{{- end }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: spire-upstream-ca
+  namespace: {{ $certMgr.bootstrapCA.namespace }}
+  annotations:
+    {{ include "spire.keepAnnotation" . | nindent 4 }}
+  labels:
+    {{ include "spire-server.labels" . | nindent 4 }}
+spec:
+  isCA: true
+  commonName: {{ $certMgr.bootstrapCA.commonName }}
+  secretName: {{ $certMgr.bootstrapCA.secretName }}
+  privateKey:
+    algorithm: {{ $certMgr.bootstrapCA.privateKey.algorithm }}
+    size: {{ $certMgr.bootstrapCA.privateKey.size }}
+  issuerRef:
+    name: {{ $certMgr.bootstrapCA.bootstrapIssuerName }}
+    kind: ClusterIssuer
+    group: {{ $certMgr.bootstrapCA.bootstrapIssuerGroup }}
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: spire-upstream-ca
+  annotations:
+    {{ include "spire.keepAnnotation" . | nindent 4 }}
+  labels:
+    {{ include "spire-server.labels" . | nindent 4 }}
+spec:
+  ca:
+    secretName: {{ $certMgr.bootstrapCA.secretName }}
+{{- end }}

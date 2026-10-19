@@ -1,0 +1,79 @@
+{{- if eq (include "valkey.internal.logRotateEnabled" .) "true" -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: logrotate-{{ include "valkey.appName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    dplane: "logrotate-job"
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: {{ include "dataplane.logRotate.jobTtl" . }}
+      template:
+        metadata:
+          labels:
+            dplane: "logrotate-job"
+        spec:
+          containers:
+            - name: logrotate
+              image: "{{ default .Values.image.repository .Values.image.alpinetools.image.repository }}/{{ .Values.image.alpinetools.image.name }}:{{ .Values.image.alpinetools.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: [ "/bin/sh", "-c" ]
+              args:
+                - |
+                  set -e
+                  STATE_FILE="/tmp/logrotate.status"
+                  LOGROTATE_CONFIG="/tmp/valkey-logrotate.conf"
+                  BASE_PATH="{{ if eq (include "parent.dataplaneMode" . ) "shared" }}/efs/logs{{ else }}/efs/clusters/{{ tpl .Values.clusterRefId . }}/logs{{ end }}"
+
+                  echo "" > "$LOGROTATE_CONFIG"
+
+                  for LOG_PATH in $BASE_PATH/valkey/*/valkey.log; do
+                    if [ -f "$LOG_PATH" ]; then
+                      echo "$LOG_PATH {
+                          size {{ .Values.valkey.internal.persistence.logRotate.size }}
+                          rotate {{ include "dataplane.logRotate.retention" . }}
+                          missingok
+                          dateext
+                          dateformat {{ include "dataplane.logRotate.fileSuffix" . }}
+                          notifempty
+                          create
+                          compress
+                      }" >> "$LOGROTATE_CONFIG"
+                    fi
+                  done
+
+                  /usr/sbin/logrotate -v --state "$STATE_FILE" "$LOGROTATE_CONFIG"
+              {{- with .Values.valkey.internal.persistence.logRotate.securityContext }}
+              securityContext:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              volumeMounts:
+                - mountPath: /efs
+                  name: {{ .Values.storage.volumeStorageName }}
+                - mountPath: /tmp
+                  name: tmpdir
+          restartPolicy: OnFailure
+          {{- with .Values.image.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 10 }}
+          {{- end }}
+          {{- if .Values.valkey.internal.persistence.logRotate.podSecurityContextEnabled }}
+          {{- with .Values.valkey.internal.persistence.logRotate.podSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- end }}
+          volumes:
+            - name: {{ .Values.storage.volumeStorageName }}
+              persistentVolumeClaim:
+                claimName: {{ .Release.Namespace }}-{{ .Values.storage.claimName }}
+            - emptyDir: {}
+              name: tmpdir
+  schedule: "{{ include "dataplane.logRotate.cronSchedule" .Values.valkey.internal.persistence.logRotate.frequency }}"
+  successfulJobsHistoryLimit: 1
+  suspend: false
+{{- end }}

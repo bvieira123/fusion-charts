@@ -1,0 +1,75 @@
+{{- if .Values.auditservice.calicoNetpol.enabled }}
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: {{ template "auditservice.appName" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  order: 10
+  selector: ampint.ctlplane == 'auditservice'
+  types:
+    - Ingress
+    - Egress
+  ingress:
+    # allow: ingress-controller -> pod
+    - action: Allow
+      protocol: TCP
+      source:
+        namespaceSelector: projectcalico.org/name == '{{ .Values.auditservice.calicoNetpol.ingressController.namespace }}'
+        selector: {{ .Values.auditservice.calicoNetpol.ingressController.podSelector }}
+      destination:
+        ports:
+          {{- range .Values.auditservice.service.ports }}
+          - {{ .targetPort }}
+          {{- end }}
+    # allow: all ampint pod in namespace -> pod
+    - action: Allow
+      protocol: TCP
+      source:
+        selector: has(ampint.ctlplane)
+      destination:
+        ports:
+          {{- range .Values.auditservice.service.ports }}
+          - {{ .targetPort }}
+          {{- end }}
+  egress:
+    # allow: pod -> k8s dns (for service name)
+    - action: Allow
+      protocol: UDP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    # allow: pod -> hazelcast
+    - action: Allow
+      protocol: TCP
+      destination:
+        selector: ampint.ctlplane == 'hazelcast'
+        ports:
+          - 5701
+    - action: Allow
+      protocol: TCP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    # allow to communicate with k8s api server
+    - action: Allow
+      destination:
+        services:
+          name: kubernetes
+          namespace: default
+      protocol: TCP
+    ### postgres## Traffic to the internet ###
+    - action: Allow
+      protocol: TCP
+      destination: {{ toYaml .Values.auditservice.calicoNetpol.postgresoutboundRule | nindent 8 }}
+    ###mongodb
+    - action: Allow
+      protocol: TCP
+      destination: {{ toYaml .Values.auditservice.calicoNetpol.mongodboutboundRule | nindent 8 }}
+    ###outbound
+    - action: Allow
+      protocol: TCP
+      destination: {{ toYaml .Values.auditservice.calicoNetpol.outboundRule | nindent 8 }}
+{{- end }}

@@ -1,0 +1,78 @@
+{{- if and (include "valkey.internal.enabled" .) (not .Values.common.externalConfigMaps) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "valkey.appName" . }}-config
+  namespace: {{ .Release.Namespace }}
+data:
+  valkey.conf: |-
+    # Core cluster settings
+{{- if .Values.zerotrust.enabled }}
+    port 0
+    tls-port 6379
+{{- else }}
+    port 6379
+{{- end }}
+    cluster-enabled yes
+    cluster-config-file "nodes.conf"
+    cluster-node-timeout {{ .Values.valkey.internal.clusterNodeTimeout }}
+    cluster-require-full-coverage no
+    notify-keyspace-events KEA
+
+    # Network
+    bind 0.0.0.0
+{{- if .Values.zerotrust.enabled }}
+    cluster-announce-tls-port 6379
+{{- else }}
+    cluster-announce-port 6379
+{{- end }}
+    cluster-announce-bus-port 16379
+
+    # Security
+    protected-mode no
+    requirepass insertpass
+    primaryauth insertpass
+{{- if .Values.zerotrust.enabled }}
+    tls-cluster yes
+    tls-replication yes
+    tls-cert-file /tls/server.crt
+    tls-key-file /tls/server.key
+    tls-ca-cert-file /tls/ca.crt
+    tls-auth-clients yes
+    unixsocket {{ .Values.valkey.internal.valkeyDir }}/valkey.sock
+    unixsocketperm 700
+{{- end }}
+
+    # Storage
+    dir {{ .Values.valkey.internal.valkeyDir }}
+
+    {{- if eq .Values.valkey.internal.persistence.appendonly "yes" }}
+    appendonly {{ .Values.valkey.internal.persistence.appendonly }}
+    appendfsync everysec
+    no-appendfsync-on-rewrite yes
+    {{- end }}
+
+    {{ include "valkey.saveConfig" . }}
+
+    # Memory
+    {{- if not .Values.valkey.internal.resources.limits.memory }}
+    # WARNING: resources.limits.memory is not set!
+    # Valkey maxmemory is set to minimal 64MB default.
+    # Consider setting resources.limits.memory to suit your use case.
+    {{- end }}
+    maxmemory {{ include "valkey.maxmemory" . }}
+    maxmemory-policy {{ .Values.valkey.internal.maxMemoryPolicy }}
+
+    # Process
+    daemonize no
+    loglevel {{ .Values.valkey.internal.logLevel }}
+    logfile "{{ if .Values.common.logFileEnabled }}logs/valkey.log{{ end }}"
+    {{- if .Values.common.logJsonEnabled }}
+    log-format {{ .Values.valkey.internal.logFormat }}
+    log-timestamp-format {{ .Values.valkey.internal.logTimeStampFormat }}
+    {{- end }}
+
+    # Replica
+    replica-serve-stale-data yes
+    replica-read-only yes
+{{- end }}

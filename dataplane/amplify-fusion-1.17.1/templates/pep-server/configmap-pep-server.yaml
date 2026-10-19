@@ -1,0 +1,46 @@
+{{- if eq .Values.common.externalConfigMaps false }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "pep-server.appName" . }}
+  namespace: {{ .Release.Namespace }}
+data:
+  JAVA_OPTS: "{{ .Values.pepServer.javaOpts }}"
+  QUARKUS_LOG_CONSOLE_LEVEL: "{{ .Values.pepServer.QUARKUS_LOG_CONSOLE_LEVEL }}"
+  TERMINATION_GRACE_PERIOD_SECS: "{{ .Values.pepServer.terminationGracePeriodSeconds }}"
+  QUARKUS_SHUTDOWN_DELAY: "{{ .Values.pepServer.preStopSleepSeconds }}"
+  extproc_background_cleanup_duration: "{{ .Values.pepServer.extproc_background_cleanup_duration }}"
+  grpc_server_drain: "{{ .Values.pepServer.grpc_server_drain }}"
+  multihost_enabled: "{{ .Values.global.multihost.enabled }}"
+  idle_timeout: "{{ .Values.pepServer.idleTimeout }}"
+  extAuthzTimeout: "{{ .Values.pepServer.extAuthzTimeout }}"
+  ocspTimeOut: "{{ .Values.pepServer.ocspTimeOut | default "900ms" }}"
+  ocspCacheTTL: "{{ .Values.pepServer.ocspCacheTTL | default "1440m" }}"
+  max_orchestration_duration: "{{ .Values.envoy.timeouts.maxDuration }}"
+  {{- if .Values.zerotrust.enabled }}
+  SPIRE_SOCKET_PATH: "{{ .Values.zerotrust.providers.spire.workload.mountPath }}/spire-agent.sock"
+  spiffe_trusted_domain: {{ include "trustDomain.spiffeId" . | quote }}
+  {{- end }}
+  otel_exporter_retry_max_attempts: "{{ .Values.pepServer.otelExporter.retry.maxAttempts }}"
+  otel_exporter_retry_min_backoff_ms: "{{ .Values.pepServer.otelExporter.retry.minBackoffMs }}"
+  otel_exporter_retry_max_backoff_seconds: "{{ .Values.pepServer.otelExporter.retry.maxBackoffSeconds }}"
+  {{ if .Values.global.multihost.enabled  }}
+  api_enabled: "{{ .Values.global.multihost.listeners.tls.api.enabled }}"
+  api_mtls_enabled: "{{ .Values.global.multihost.listeners.tls.api_mtls.enabled }}"
+  https_enabled: "{{ .Values.global.multihost.listeners.tls.https.enabled }}"
+  webhook_enabled: "{{ .Values.global.multihost.listeners.tls.webhook.enabled }}"
+  api_server_name: "{{ .Values.global.multihost.listeners.tls.api.hostPrefix }}.{{ .Values.global.external_domain }}"
+  api_mtls_server_name: "{{ .Values.global.multihost.listeners.tls.api_mtls.hostPrefix }}.{{ .Values.global.external_domain }}"
+  https_server_name: "{{ .Values.global.multihost.listeners.tls.https.hostPrefix }}.{{ .Values.global.external_domain }}"
+  webhook_server_name: "{{ .Values.global.multihost.listeners.tls.webhook.hostPrefix }}.{{ .Values.global.external_domain }}"
+  listener_port: "8443"
+  {{ else }}
+  listener_port: "4443"
+  listener_mtls_port: "5443"
+  {{- if eq  (include "parent.dataplaneMode" . ) "shared" }}
+  api_server_name: "*.{{ .Values.global.external_domain }}"
+  {{- else }}
+  api_server_name: "{{ .Values.global.external_domain }}"
+  {{- end }}
+  {{- end }}
+{{- end }}

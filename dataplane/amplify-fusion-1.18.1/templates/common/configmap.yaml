@@ -1,0 +1,104 @@
+{{- if eq .Values.externalConfigMaps false }}
+{{- $domain := ((eq .Values.clusterKey "") | ternary  .Values.ctlplane_domain (printf "%s" (.Values.clusterKey | b64dec | fromJson).domain )) | required "If deploying a shared dataplane, set your control plane domain using .Values.ctlplane_domain. If not set a valid clusterKey" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: configmap-common
+  namespace: {{ .Release.Namespace }}
+data:
+  s3_payload: "{{ tpl  .Values.storage.s3Payload . }}"
+  app_env: {{ .Values.appEnv }}
+  tenant_namespace: "{{ .Release.Namespace }}"
+  k8_namespace: "{{ .Release.Namespace }}"
+  cluster_name: {{ (eq .Values.clusterKey "") | ternary "Shared Data Plane" (printf "%s" (.Values.clusterKey | b64dec | fromJson).name) }}
+  cluster_type: {{ (eq .Values.clusterKey "") | ternary "MANAGED_SHARED" (printf "%s" (.Values.clusterKey | b64dec | fromJson).runtimeType) }}
+  domain: {{ $domain }}
+  tenant: {{ (eq .Values.clusterKey "") | ternary "shared" (printf "%s" (.Values.clusterKey | b64dec | fromJson).tenant) }}
+  im_url: {{ (eq .Values.clusterKey "") | ternary (printf "wss://services.%s/monitor/ws" .Values.ctlplane_domain) (printf "%s" (.Values.clusterKey | b64dec | fromJson).im_url) }}
+  sink_ws_url: {{ (eq .Values.clusterKey "") | ternary (printf "wss://services.%s/auditservice/ws" .Values.ctlplane_domain) (printf "%s" (.Values.clusterKey | b64dec | fromJson).audit_service_url) }}
+  mode: {{ include "parent.dataplaneMode" . }}
+  server_cert_path: /certificate/{{ .Values.tls.domainCertificate.name }}
+  {{- if .Values.tls.sshCertificate.enabled }}
+  sftp_server_cert_path: /ssh-certificate/keystore.p12
+  {{- else }}
+  sftp_server_cert_path: /certificate/{{ .Values.tls.domainCertificate.name }}
+  {{- end }}
+  support_email: "{{ tpl  .Values.email.supportAddress . }}"
+  {{- if eq  (include "parent.dataplaneMode" . ) "shared" }}
+  server_truststore_path: /efs/certificate/{{ include "parent.dataplaneMode" . }}/{{ tpl  .Values.tls.truststore . }}
+  efs_root: /efs
+  {{- else }}
+  clusterRefId: "{{ tpl  .Values.clusterRefId . }}"
+  server_truststore_path: /efs/certificates/{{ tpl  .Values.clusterRefId . }}/{{ tpl  .Values.tls.truststore . }}
+  efs_root: /efs/clusters/{{ tpl  .Values.clusterRefId . }}
+  tenant_name: {{ (printf "%s" (.Values.clusterKey | b64dec | fromJson).tenant) }}
+  {{- end }}
+  sftp_server_port: "{{ tpl (.Values.sftp_server_port | toString) . }}"
+  admin_email: "{{ tpl  .Values.email.adminAddress . }}"
+  dxchange_email_host: "{{ tpl  .Values.email.host . }}"
+  dxchange_email_port: "{{ tpl (.Values.email.port | toString) . }}"
+  dxchange_email_usetls: "{{ .Values.email.useTls }}"
+  dxchange_email_authentication: "{{ .Values.email.authentication }}"
+  dxchange_email_frommailid: "{{ tpl  .Values.email.fromAddress . }}"
+  log_file_enabled: "{{ .Values.logging.logFileEnabled }}"
+  log_json_enabled: "{{ .Values.logging.logJsonEnabled }}"
+  {{- if .Values.openTelemetry.enabled }}
+  otel_enabled: "{{ .Values.openTelemetry.enabled }}"
+  {{- if .Values.openTelemetry.exporter.log.enabled }}
+  otel_exporter_log_enabled: "{{ .Values.openTelemetry.exporter.log.enabled }}"
+  {{- end }}
+  {{- if .Values.openTelemetry.exporter.http.enabled }}
+  otel_exporter_http_enabled: "{{ .Values.openTelemetry.exporter.http.enabled }}"
+  {{- $httpEndpoint := tpl .Values.openTelemetry.exporter.http.endpoint . }}
+  {{- if eq $httpEndpoint "" }}
+  {{ fail "openTelemetry.exporter.http.enabled=true but fluentBit.enabled=false and no explicit http.endpoint is set — set an explicit endpoint or enable Fluent Bit." }}
+  {{- end }}
+  otel_exporter_http_endpoint: "{{ $httpEndpoint }}"
+  {{- $httpComputedExternal := not (contains (include "fluent-bit.appName" .) $httpEndpoint) }}
+  otel_exporter_http_external: "{{ if hasKey .Values.openTelemetry.exporter.http "external" }}{{ .Values.openTelemetry.exporter.http.external }}{{ else }}{{ $httpComputedExternal }}{{ end }}"
+  {{- end }}
+  {{- if .Values.openTelemetry.exporter.grpc.enabled }}
+  otel_exporter_grpc_enabled: "{{ .Values.openTelemetry.exporter.grpc.enabled }}"
+  {{- $grpcEndpoint := tpl .Values.openTelemetry.exporter.grpc.endpoint . }}
+  {{- if eq $grpcEndpoint "" }}
+  {{ fail "openTelemetry.exporter.grpc.enabled=true but fluentBit.enabled=false and no explicit grpc.endpoint is set — set an explicit endpoint or enable Fluent Bit." }}
+  {{- end }}
+  otel_exporter_grpc_endpoint: "{{ $grpcEndpoint }}"
+  {{- $grpcComputedExternal := not (contains (include "fluent-bit.appName" .) $grpcEndpoint) }}
+  otel_exporter_grpc_external: "{{ if hasKey .Values.openTelemetry.exporter.grpc "external" }}{{ .Values.openTelemetry.exporter.grpc.external }}{{ else }}{{ $grpcComputedExternal }}{{ end }}"
+  {{- end }}
+  {{- end }}
+  {{- if .Values.valkey.enabled }}
+  datagrid_deployment_model: "{{ include "valkey.client.deploymentModel" . }}"
+  datagrid_implementation: VALKEY
+  datagrid_read_mode: "{{ .Values.valkey.client.read_mode }}"
+  datagrid_username: "{{ .Values.valkey.client.datagrid_username }}"
+  datagrid_security_mode: "{{ include "valkey.client.securityMode" . }}"
+  datagrid_addresses: "{{- range $i, $v := .Values.valkey.hosts }}{{ if $i }},{{ end }}{{ $v.hostname }}{{ if $v.port }}:{{ $v.port }}{{ end }}{{ end -}}"
+  datagrid_primary_connection_pool_min: "{{ .Values.valkey.client.datagrid_primary_connection_pool_min }}"
+  datagrid_primary_connection_pool_max: "{{ .Values.valkey.client.datagrid_primary_connection_pool_max }}"
+  datagrid_replica_connection_pool_min: "{{ .Values.valkey.client.datagrid_replica_connection_pool_min }}"
+  datagrid_replica_connection_pool_max: "{{ .Values.valkey.client.datagrid_replica_connection_pool_max }}"
+  datagrid_worker_threads: "{{ .Values.valkey.client.datagrid_worker_threads }}"
+  datagrid_idle_connection_timeout_millis: "{{ .Values.valkey.client.datagrid_idle_connection_timeout_millis }}"
+  datagrid_cluster_connect_timeout_millis: "{{ .Values.valkey.client.datagrid_cluster_connect_timeout_millis }}"
+  datagrid_response_timeout_millis: "{{ .Values.valkey.client.datagrid_response_timeout_millis }}"
+  datagrid_number_of_retries: "{{ .Values.valkey.client.datagrid_number_of_retries }}"
+  datagrid_retry_interval_millis: "{{ .Values.valkey.client.datagrid_retry_interval_millis }}"
+  datagrid_subscription_mode: "{{ .Values.valkey.client.subscription_mode }}"
+  datagrid_subscriptions_per_connection: "{{ .Values.valkey.client.datagrid_subscriptions_per_connection }}"
+  datagrid_subscription_connection_pool_size: "{{ .Values.valkey.client.datagrid_subscription_connection_pool_size }}"
+  datagrid_subscription_connection_min_idle_size: "{{ .Values.valkey.client.datagrid_subscription_connection_min_idle_size }}"
+  datagrid_subscription_connection_timeout_millis: "{{ .Values.valkey.client.datagrid_subscription_connection_timeout_millis }}"
+  {{- end }}
+  {{- with .Values.hsm }}
+  hsmCacheExpiration: "{{ .hsmCacheExpiration }}"
+  {{- end }}
+  {{- if .Values.zerotrust.enabled }}
+  mtls_provider: "spire"
+  spire_init_timeout_seconds: "30"
+  k8s_namespace: "{{ .Release.Namespace }}"
+  {{- else }}
+  mtls_provider: "none"
+  {{- end }}
+{{- end }}

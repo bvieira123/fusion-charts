@@ -1,0 +1,67 @@
+{{- if .Values.fluentBit.calicoNetpol.enabled }}
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: {{ template "fluent-bit.appName" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  order: 10
+  selector: dplane == 'fluent-bit'
+  types:
+    - Ingress
+    - Egress
+  ingress:
+    # allow all pods in the namespace to send OTLP traces and any extra ports
+    - action: Allow
+      protocol: TCP
+      source:
+        namespaceSelector: projectcalico.org/name == '{{ .Release.Namespace }}'
+      destination:
+        ports:
+          - 4317
+          - 4318
+          {{- range .Values.fluentBit.extraPorts }}
+          - {{ .containerPort }}
+          {{- end }}
+  egress:
+    # allow to communicate to DNS pods
+    - action: Allow
+      protocol: UDP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    - action: Allow
+      protocol: TCP
+      destination:
+        namespaceSelector: projectcalico.org/name == 'kube-system'
+        ports:
+          - 53
+    # allow to communicate with itself for clustering
+    - action: Allow
+      protocol: TCP
+      destination:
+        selector: dplane == 'fluent-bit'
+        namespaceSelector: projectcalico.org/name == '{{ .Release.Namespace }}'
+        ports:
+          - {{ .Values.fluentBit.metricsPort }}
+          - 4317
+          - 4318
+          {{- range .Values.fluentBit.extraPorts }}
+          - {{ .containerPort }}
+          {{- end }}
+    # allow to communicate with k8s api server
+    - action: Allow
+      destination:
+        services:
+          name:  kubernetes
+          namespace: default
+      protocol: TCP
+    # allow outbound connections as configured
+    {{- with .Values.fluentBit.calicoNetpol.outboundRule }}
+    - action: Allow
+      protocol: TCP
+      destination:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+{{- end }}

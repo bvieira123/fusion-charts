@@ -1,0 +1,14 @@
+{{- if ( and .Values.api.serviceAccount.enabled ( not .Values.api.serviceAccount.preexisting ) ) -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: api-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: api-role
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.api.serviceAccount.enabled | ternary .Values.api.serviceAccount.name "default" }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
